@@ -23,6 +23,7 @@ public/data/data.before-*.json
 eval-report*.json
 eval-verify.json
 eval-llm-badge.json
+eval-digest.json
 eval-shots/
 
 # stray local scratch files

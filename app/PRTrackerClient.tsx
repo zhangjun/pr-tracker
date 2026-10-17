@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type { FeedData, FeedItem, FocusKey, CatKey, WeeklyDigest } from "./types";
+import type { DigestItem, FeedData, FeedItem, FocusKey, CatKey, WeeklyDigest } from "./types";
 
 /* ── design tokens (mirror globals.css) ───────────────────────────────────────── */
 const FOCUS_COLOR: Record<FocusKey, string> = {
@@ -94,17 +94,47 @@ function weeklyBars(items: FeedItem[], n = 8): number[] {
     return items.filter(p => { const t = +toDate(p.created_at); return t >= s && t < e; }).length;
   });
 }
+/* ── ISO-8601 week helpers ─────────────────────────────────────────────────────
+   The server buckets with Python's `isocalendar()`, so the client must use the
+   same definition — otherwise a digest labelled W42 can sit above buckets
+   labelled W41/W43 for the very same items. All maths is done in UTC and only
+   formatted at the end, so a negative local offset cannot shift a day.        */
+const FMT_UTC = new Intl.DateTimeFormat("en", { month: "short", day: "numeric", timeZone: "UTC" });
+
+function isoWeekOf(d: Date): { year: number; week: number } {
+  // read the UTC calendar day: GitHub timestamps are UTC and Python's
+  // isocalendar() is applied to them directly, so a local-time read would
+  // shift items near midnight into a different week than the server.
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const dow = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - dow);              // move to the week's Thursday
+  const yearStart = Date.UTC(t.getUTCFullYear(), 0, 1);
+  const week = Math.ceil(((t.getTime() - yearStart) / 86400000 + 1) / 7);
+  return { year: t.getUTCFullYear(), week };
+}
+
+function isoWeekKey(d: Date): string {
+  const { year, week } = isoWeekOf(d);
+  return `${year}-W${String(week).padStart(2, "0")}`;
+}
+
+/** UTC midnight of the Monday that opens the given ISO week. */
+function isoWeekStart(label: string): Date {
+  const m = label.match(/^(\d{4})-W(\d{1,2})$/);
+  if (!m) return new Date();
+  const year = +m[1], week = +m[2];
+  const jan4 = new Date(Date.UTC(year, 0, 4));          // Jan 4 is always in W01
+  const jan4Dow = jan4.getUTCDay() || 7;
+  const monday = new Date(jan4);
+  monday.setUTCDate(jan4.getUTCDate() - (jan4Dow - 1) + (week - 1) * 7);
+  return monday;
+}
+
 function isoWeekRange(label: string): string {
-  const m = label.match(/W(\d+)/i);
-  if (!m) return "";
-  const w = parseInt(m[1]);
-  const y = new Date().getFullYear();
-  const jan1 = new Date(y, 0, 1);
-  const dow = jan1.getDay() || 7;
-  const mon1 = new Date(y, 0, 1 - (dow - 1));
-  const start = new Date(mon1); start.setDate(mon1.getDate() + (w - 1) * 7);
-  const end = new Date(start); end.setDate(start.getDate() + 6);
-  return `${FMT.format(start)} – ${FMT.format(end)}`;
+  const start = isoWeekStart(label);
+  const end = new Date(start);
+  end.setUTCDate(start.getUTCDate() + 6);
+  return `${FMT_UTC.format(start)} – ${FMT_UTC.format(end)}`;
 }
 
 /* ── activity sparkline for repo cards ────────────────────────────────────────── */
@@ -216,28 +246,166 @@ function ItemRow({ it }: { it: FeedItem }) {
   );
 }
 
-/* ── weekly illustrated digest ────────────────────────────────────────────────── */
+/* ── digest builder (client side) ────────────────────────────────────────────────
+   The digest is derived from the *filtered* items, so what the panel claims and
+   what the list below shows can never disagree. `allItems` is only used for
+   snapshot-coverage reporting, which is a property of the dataset itself.     */
+const DIGEST_TOP_N = 6;
+const DIGEST_DIR_N = 4;
+const DIGEST_REPO_CAP = 2;      // max top slots per repo, for cross-repo breadth
+
+function toDigestItem(it: FeedItem): DigestItem {
+  return {
+    id: it.id, repo: it.repo, number: it.number, title: it.title,
+    author: it.author, url: it.url, score: it.score, focus: it.focus,
+    summary: it.summary,
+  };
+}
+
+/** Per-repo span of the snapshot — reveals the per-repo fetch caps. */
+function repoCoverage(allItems: FeedItem[]): Map<string, { days: number; count: number }> {
+  const span = new Map<string, { min: number; max: number; count: number }>();
+  for (const it of allItems) {
+    const t = +toDate(it.created_at);
+    if (!isFinite(t)) continue;
+    const cur = span.get(it.repo);
+    if (!cur) span.set(it.repo, { min: t, max: t, count: 1 });
+    else { cur.min = Math.min(cur.min, t); cur.max = Math.max(cur.max, t); cur.count += 1; }
+  }
+  const out = new Map<string, { days: number; count: number }>();
+  for (const [repo, v] of span) {
+    out.set(repo, { days: Math.max(1, Math.round((v.max - v.min) / 86400000) + 1), count: v.count });
+  }
+  return out;
+}
+
+function buildDigest(week: string, items: FeedItem[], allItems: FeedItem[]): WeeklyDigest {
+  const inWeek = items.filter(it => isoWeekKey(new Date(it.created_at)) === week);
+  const total = inWeek.length;
+  const prs = inWeek.filter(i => i.type === "pr").length;
+  const issues = total - prs;
+
+  const by_focus: Record<FocusKey, number> = { inference: 0, training: 0, direction: 0, general: 0 };
+  for (const it of inWeek) by_focus[it.focus] += 1;
+
+  const start = isoWeekStart(week);
+  const end = new Date(start); end.setUTCDate(start.getUTCDate() + 6);
+  const now = new Date();
+  const complete = now.getTime() >= end.getTime();
+  const days_elapsed = Math.max(1, Math.min(7, Math.floor((now.getTime() - start.getTime()) / 86400000) + 1));
+
+  // outcome side — merged/closed are timestamps, not creation dates
+  const inWeekTs = (s?: string | null) => !!s && isoWeekKey(new Date(s)) === week;
+  const merged = items.filter(i => inWeekTs(i.merged_at)).length;
+  const closed = items.filter(i => inWeekTs(i.closed_at)).length;
+
+  // repo breadth, with a per-repo cap so one busy repo cannot own the list
+  const repoCount = new Map<string, number>();
+  for (const it of inWeek) repoCount.set(it.repo, (repoCount.get(it.repo) ?? 0) + 1);
+  const cov = repoCoverage(allItems);
+  const top_repos = [...repoCount.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([repo, count]) => {
+      const c = cov.get(repo);
+      return { repo, count, days: c?.days, per_day: c ? +(count / c.days).toFixed(1) : undefined };
+    });
+
+  // Top PRs: score first, then a deterministic tiebreak (comments → reactions →
+  // recency) so equal scores stop being an arbitrary coin flip.
+  const ranked = inWeek
+    .filter(i => i.type === "pr")
+    .sort((a, b) =>
+      b.score - a.score ||
+      (b.comments ?? 0) - (a.comments ?? 0) ||
+      (b.reactions ?? 0) - (a.reactions ?? 0) ||
+      +toDate(b.created_at) - +toDate(a.created_at));
+
+  const picked: FeedItem[] = [];
+  const perRepo = new Map<string, number>();
+  for (const it of ranked) {
+    if (picked.length >= DIGEST_TOP_N) break;
+    const n = perRepo.get(it.repo) ?? 0;
+    if (n >= DIGEST_REPO_CAP) continue;
+    perRepo.set(it.repo, n + 1);
+    picked.push(it);
+  }
+  for (const it of ranked) {                       // fill any slots diversity left empty
+    if (picked.length >= DIGEST_TOP_N) break;
+    if (!picked.includes(it)) picked.push(it);
+  }
+  // selection is diverse, presentation stays score-ordered
+  const top = picked.sort((a, b) => b.score - a.score).map(toDigestItem);
+
+  const dirAll = inWeek.filter(i => i.focus === "direction").sort((a, b) => b.score - a.score);
+  const topIds = new Set(top.map(t => t.id));
+  const direction = dirAll.filter(i => !topIds.has(i.id)).slice(0, DIGEST_DIR_N).map(toDigestItem);
+
+  // themes come from tags — `subsystems` is empty in this dataset
+  const tagCount = new Map<string, number>();
+  for (const it of inWeek) for (const t of it.tags) tagCount.set(t, (tagCount.get(t) ?? 0) + 1);
+  const topTags = [...tagCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+
+  const per_day = total / days_elapsed;
+  const parts: string[] = [];
+  parts.push(`${complete ? "本周" : "本周尚未结束（" + days_elapsed + "/7 天）"}日均 ${per_day.toFixed(0)} 条`);
+  parts.push(`合并 ${merged} 条、关闭 ${closed} 条`);
+  parts.push(`领域分布：推理 ${by_focus.inference}、训练 ${by_focus.training}、方向 ${by_focus.direction}、通用 ${by_focus.general}`);
+  if (topTags.length) {
+    parts.push(`热点主题：${topTags.map(([t, c]) => `${t} (${c})`).join("、")}`);
+  }
+  const narrative = parts.join("。") + "。";
+
+  const thin = [...cov.entries()].filter(([, v]) => v.days < 7).map(([r]) => r.split("/")[1]);
+  const coverage_partial = thin.length > 0;
+  const coverage_note = coverage_partial
+    ? `快照覆盖不均：${thin.join("、")} 不足 7 天，总量与仓库排名仅供趋势参考`
+    : undefined;
+
+  return {
+    week,
+    range: isoWeekRange(week),
+    total, prs, issues, merged, closed, by_focus, top_repos, top, direction,
+    direction_total: dirAll.length,
+    narrative,
+    complete, days_elapsed, as_of: now.toISOString(), per_day: +per_day.toFixed(1),
+    coverage_partial, coverage_note,
+  };
+}
+
 const DIGEST_FOCUS: FocusKey[] = ["inference", "training", "direction", "general"];
 const DIGEST_COLOR: Record<FocusKey, string> = {
   inference: "var(--c-inference)", training: "var(--c-training)",
   direction: "var(--c-direction)", general: "var(--c-general)",
 };
 
-function WeeklyDigestPanel({ d, compact }: { d: WeeklyDigest; compact?: boolean }) {
+function WeeklyDigestPanel({ d, compact, filtered }: {
+  d: WeeklyDigest; compact?: boolean; filtered?: boolean;
+}) {
   const total = Math.max(1, d.total);
   return (
     <div className="digest">
       <div className="digest-head">
         <div>
-          <div className="digest-kicker">WEEKLY DIGEST · {d.week}</div>
+          <div className="digest-kicker">
+            WEEKLY DIGEST · {d.week}
+            {d.complete === false && (
+              <span className="digest-live" title="The ISO week has not finished yet — counts will keep changing">
+                IN PROGRESS · {d.days_elapsed}/7 d
+              </span>
+            )}
+            {filtered && <span className="digest-scope">FILTERED</span>}
+          </div>
           <div className="digest-range">
             {d.range} · {d.total} items · PR {d.prs} · Issue {d.issues}
+            {typeof d.merged === "number" && <> · merged {d.merged} · closed {d.closed}</>}
           </div>
         </div>
         <div className="legend">
           {DIGEST_FOCUS.map(f => (
             <span key={f} className="legend-item">
-              <span className="legend-dot" style={{ background: DIGEST_COLOR[f] }} />{f}
+              <span className="legend-dot" style={{ background: DIGEST_COLOR[f] }} />
+              {f} <b>{d.by_focus[f]}</b>
             </span>
           ))}
         </div>
@@ -249,7 +417,7 @@ function WeeklyDigestPanel({ d, compact }: { d: WeeklyDigest; compact?: boolean 
         {DIGEST_FOCUS.map(f => {
           const pct = (d.by_focus[f] / total) * 100;
           return (
-            <span key={f} title={`${f}: ${d.by_focus[f]}`}
+            <span key={f} title={`${f}: ${d.by_focus[f]} (${pct.toFixed(1)}%)`}
               style={{ width: `${pct}%`, background: DIGEST_COLOR[f] }} />
           );
         })}
@@ -258,35 +426,55 @@ function WeeklyDigestPanel({ d, compact }: { d: WeeklyDigest; compact?: boolean 
       {d.top_repos.length > 0 && (
         <div className="digest-repos">
           {d.top_repos.map(r => (
-            <span key={r.repo} className="digest-repo">
+            <span key={r.repo} className="digest-repo"
+              title={r.days ? `${r.count} items over ${r.days} observed day(s) ≈ ${r.per_day}/day` : undefined}>
               {r.repo.split("/")[1]} <b>{r.count}</b>
+              {r.days !== undefined && r.days < 7 && <span className="repo-thin"> ·{r.days}d</span>}
             </span>
           ))}
         </div>
       )}
 
+      {d.coverage_note && (
+        <div className="digest-warn">
+          <span className="warn-dot" />{d.coverage_note}
+        </div>
+      )}
+
       {!compact && (
         <>
-          <div className="digest-section-title">Top PRs this week</div>
-          <div className="digest-top">
-            {d.top.map(t => (
-              <a key={t.id} href={t.url} target="_blank" rel="noopener noreferrer"
-                className="digest-top-card" data-focus={t.focus}>
-                <div className="dt-top">
-                  <span className="dt-score" style={{ color: scoreColor(t.score) }}>{t.score}</span>
-                  <span className="dt-repo">{t.repo.split("/")[1]} #{t.number}</span>
-                  <span className="dt-focus" style={{ background: DIGEST_COLOR[t.focus], color: "#fff" }}>{t.focus}</span>
-                </div>
-                <div className="dt-title">{t.title}</div>
-                <div className="dt-summary">{t.summary}</div>
-                <div className="dt-author">@{t.author}</div>
-              </a>
-            ))}
+          <div className="digest-section-title">
+            Top PRs this week
+            <span className="digest-section-note">ranked by score · max {DIGEST_REPO_CAP} per repo</span>
           </div>
+          {d.top.length === 0 ? (
+            <div className="digest-empty">No pull requests match the current filters in this week.</div>
+          ) : (
+            <div className="digest-top">
+              {d.top.map(t => (
+                <a key={t.id} href={t.url} target="_blank" rel="noopener noreferrer"
+                  className="digest-top-card" data-focus={t.focus}>
+                  <div className="dt-top">
+                    <span className="dt-score" style={{ color: scoreColor(t.score) }}>{t.score}</span>
+                    <span className="dt-repo">{t.repo.split("/")[1]} #{t.number}</span>
+                    <span className="dt-focus" style={{ background: DIGEST_COLOR[t.focus], color: "#fff" }}>{t.focus}</span>
+                  </div>
+                  <div className="dt-title">{t.title}</div>
+                  <div className="dt-summary">{t.summary}</div>
+                  <div className="dt-author">@{t.author}</div>
+                </a>
+              ))}
+            </div>
+          )}
 
           {d.direction.length > 0 && (
             <>
-              <div className="digest-section-title">Direction &amp; Evolution</div>
+              <div className="digest-section-title">
+                Direction &amp; Evolution
+                <span className="digest-section-note">
+                  showing {d.direction.length} of {d.direction_total ?? d.direction.length}
+                </span>
+              </div>
               <div className="digest-dir">
                 {d.direction.map(t => (
                   <a key={t.id} href={t.url} target="_blank" rel="noopener noreferrer"
@@ -384,6 +572,20 @@ export default function PRTrackerClient() {
   // reset the rendered-item budget whenever the result set or view changes
   useEffect(() => { setVisible(RENDER_CAP); }, [filtered, view]);
 
+  // The digest is rebuilt from the filtered items so the panel can never claim a
+  // number the list below contradicts. `week` still comes from the server payload
+  // so the panel and the weekly buckets agree on which week is being summarised.
+  const digest = useMemo<WeeklyDigest | null>(() => {
+    if (!data?.weekly_digest?.week) return null;
+    return buildDigest(data.weekly_digest.week, filtered, data.items);
+  }, [data, filtered]);
+
+  // true when the user narrowed the dataset explicitly (the time window is left
+  // out on purpose: a 7/30/90-day window still covers the whole digest week)
+  const digestFiltered =
+    typeFilter !== "all" || repoFilter !== "all" || focusFilter !== "all" ||
+    stateFilter !== "all" || catFilter.size > 0 || search.trim() !== "";
+
   // stats
   const stats = useMemo(() => {
     const prs = filtered.filter(i => i.type === "pr").length;
@@ -431,10 +633,7 @@ export default function PRTrackerClient() {
   function groupByWeek(items: FeedItem[]) {
     const map = new Map<string, FeedItem[]>();
     for (const it of items) {
-      const d = new Date(it.created_at);
-      const jan1 = new Date(d.getFullYear(), 0, 1);
-      const week = Math.ceil(((+d - +jan1) / 86400000 + jan1.getDay()) / 7);
-      const key = `${d.getFullYear()}-W${week}`;
+      const key = isoWeekKey(new Date(it.created_at));
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(it);
     }
@@ -601,8 +800,8 @@ export default function PRTrackerClient() {
         </header>
 
         <div className="content">
-          {data?.weekly_digest && view === "weekly" && <WeeklyDigestPanel d={data.weekly_digest} />}
-          {data?.weekly_digest && view === "overview" && <WeeklyDigestPanel d={data.weekly_digest} compact />}
+          {digest && view === "weekly" && <WeeklyDigestPanel d={digest} filtered={digestFiltered} />}
+          {digest && view === "overview" && <WeeklyDigestPanel d={digest} compact filtered={digestFiltered} />}
 
           {/* stat cards */}
           <div className="stat-grid">

@@ -455,6 +455,36 @@ table.tbl tbody tr:hover { background: var(--surface-2); }
 .digest-dir-item .dt-repo { flex-shrink: 0; }
 .digest-dir-item[data-focus="direction"] .dt-title { color: var(--c-direction); }
 
+/* ── digest status / coverage affordances ─────────────────────────────────── */
+.digest-live, .digest-scope {
+  margin-left: 8px; font-family: var(--font-mono); font-size: 9px; font-weight: 700;
+  letter-spacing: .06em; padding: 2px 6px; border-radius: 4px; vertical-align: 1px;
+  text-transform: none;
+}
+.digest-live {
+  color: #8a5a00;
+  background: color-mix(in oklab, var(--c-direction) 14%, transparent);
+  border: 1px solid color-mix(in oklab, var(--c-direction) 35%, var(--border));
+}
+.digest-scope {
+  color: var(--teal-700); background: var(--teal-50);
+  border: 1px solid color-mix(in oklab, var(--teal-500) 35%, var(--border));
+}
+.legend-item b { color: var(--ink); font-weight: 700; margin-left: 2px; }
+/* a 0.8% bucket would otherwise collapse to nothing and read as "no data" */
+.digest-bar span { min-width: 3px; }
+.repo-thin { color: var(--ink-mute); font-weight: 400; }
+.digest-warn {
+  display: flex; align-items: center; gap: 6px; margin-top: 10px;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-mute);
+}
+.warn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c-direction); flex-shrink: 0; }
+.digest-section-note {
+  margin-left: 8px; font-weight: 400; letter-spacing: 0;
+  text-transform: none; color: var(--ink-mute); opacity: .85;
+}
+.digest-empty { font-size: 12px; color: var(--ink-mute); padding: 10px 0; }
+
 /* ── responsive ──────────────────────────────────────────────────────────────── */
 @media (max-width: 1100px) {
   .stat-grid { grid-template-columns: repeat(2, 1fr); }

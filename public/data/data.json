@@ -94,6 +94,8 @@
   "total": 927,
   "prs": 862,
   "issues": 65,
+  "merged": 176,
+  "closed": 255,
   "by_focus": {
    "inference": 542,
    "training": 296,
@@ -103,23 +105,33 @@
   "top_repos": [
    {
     "repo": "vllm-project/vllm",
-    "count": 227
+    "count": 227,
+    "days": 2,
+    "per_day": 113.5
    },
    {
     "repo": "sgl-project/sglang",
-    "count": 213
+    "count": 213,
+    "days": 2,
+    "per_day": 106.5
    },
    {
     "repo": "NVIDIA/TensorRT-LLM",
-    "count": 208
+    "count": 208,
+    "days": 4,
+    "per_day": 52.0
    },
    {
     "repo": "NVIDIA/Megatron-LM",
-    "count": 179
+    "count": 179,
+    "days": 8,
+    "per_day": 22.4
    },
    {
     "repo": "verl-project/verl",
-    "count": 73
+    "count": 73,
+    "days": 18,
+    "per_day": 4.1
    }
   ],
   "top": [
@@ -146,48 +158,48 @@
     "summary": "Fixes Triton attention tiling changing based on batch composition in batch-invariant mode, causing deterministic output failures for head_size=256 on SM100 GPUs."
    },
    {
-    "id": "vllm-project/vllm#62169",
-    "repo": "vllm-project/vllm",
-    "number": 62169,
-    "title": "[Bugfix][Attention] Chunk sparse indexer decode logits by request",
-    "author": "booth-algo",
-    "url": "https://github.com/vllm-project/vllm/pull/62169",
-    "score": 78,
-    "focus": "inference",
-    "summary": "Chunks sparse indexer decode logits by request to bound per-chunk memory usage, freeing GPU memory for KV cache without accuracy loss."
-   },
-   {
-    "id": "sgl-project/sglang#44786",
+    "id": "sgl-project/sglang#44889",
     "repo": "sgl-project/sglang",
-    "number": 44786,
-    "title": "[RFC / Feature] SPICY-KV: 28.6x–50x Pre-RoPE Algebraic Multigrid KV Compression for RadixAttention & Long-CoT (91.7%–100% RULER Recall & 100% Shared-Prefix Multi-Query Reuse)",
-    "author": "Yuge-Y",
-    "url": "https://github.com/sgl-project/sglang/issues/44786",
-    "score": 78,
-    "focus": "direction",
-    "summary": "Proposes SPICY-KV, a pre-RoPE algebraic multigrid KV compression method achieving 28.6x–50x compression for RadixAttention shared prefixes and Long-CoT with high RULER recall."
+    "number": 44889,
+    "title": "[Feat] PD: Support KV-only hybrid decode radix cache with linear EAGLE",
+    "author": "Jzz1943",
+    "url": "https://github.com/sgl-project/sglang/pull/44889",
+    "score": 75,
+    "focus": "inference",
+    "summary": "Enables KV-only prefix reuse in the hybrid decode radix cache without requiring recurrent-state checkpoints, supporting linear EAGLE/MTP speculation."
    },
    {
-    "id": "vllm-project/vllm#62068",
-    "repo": "vllm-project/vllm",
-    "number": 62068,
-    "title": "[Bugfix][MoE] Keep per-expert gate/up halves separate under stacked mappers",
-    "author": "pasta-paul",
-    "url": "https://github.com/vllm-project/vllm/pull/62068",
-    "score": 78,
+    "id": "sgl-project/sglang#44852",
+    "repo": "sgl-project/sglang",
+    "number": 44852,
+    "title": "[Perf] [Intel] gemma4: Enable frozen-KV MTP graph capture",
+    "author": "alexnails",
+    "url": "https://github.com/sgl-project/sglang/pull/44852",
+    "score": 75,
     "focus": "inference",
-    "summary": "Fixes silent weight corruption in RoutedExperts.load_weights where per-expert gate and up halves were incorrectly fused, causing gate rows to be overwritten by stacked mappers."
+    "summary": "Enables frozen-KV draft graph capture on Intel XPU for MTP, fixing serving failures and improper KV pool usage in the synchronous scheduler."
    },
    {
-    "id": "vllm-project/vllm#62049",
-    "repo": "vllm-project/vllm",
-    "number": 62049,
-    "title": "[Bugfix][LoRA] Map lm_head LoRA to batch tokens for prompt logprobs (…",
-    "author": "BeichenHuang",
-    "url": "https://github.com/vllm-project/vllm/pull/62049",
-    "score": 78,
-    "focus": "inference",
-    "summary": "Fixes prompt_logprobs silently dropping or mixing up lm_head LoRA adapter deltas across requests in mixed-adapter batches on both V1 and MRV2 runners."
+    "id": "NVIDIA/Megatron-LM#8144",
+    "repo": "NVIDIA/Megatron-LM",
+    "number": 8144,
+    "title": "Quantize MLA key and value in TE's fused key/value RoPE kernel",
+    "author": "sraman-rgb",
+    "url": "https://github.com/NVIDIA/Megatron-LM/pull/8144",
+    "score": 72,
+    "focus": "training",
+    "summary": "Fuses MXFP8 key/value quantization into Transformer Engine's MLA RoPE kernel, replacing separate split-quant kernels with a single fused kernel (~100 us vs ~136 us per layer)."
+   },
+   {
+    "id": "NVIDIA/Megatron-LM#8143",
+    "repo": "NVIDIA/Megatron-LM",
+    "number": 8143,
+    "title": "Take the MTP acceptance argmax from TE's cross entropy",
+    "author": "sraman-rgb",
+    "url": "https://github.com/NVIDIA/Megatron-LM/pull/8143",
+    "score": 72,
+    "focus": "training",
+    "summary": "Eliminates redundant argmax computation in MTP training by reusing the argmax returned from TE's parallel_cross_entropy instead of computing it separately."
    }
   ],
   "direction": [
@@ -236,7 +248,51 @@
     "summary": "Proposes SPICY-KV, a pre-RoPE algebraic multigrid KV compression method achieving 28.6x–50x ratios with near-lossless RULER recall on DeepSeek-R1 long-CoT models."
    }
   ],
-  "narrative": "本周（Oct 12 – Oct 18）共 927 条动态 —— PR 862 · Issue 65。推理优化 542 条、训练优化 296 条、方向演进 8 条。最活跃仓库：vllm (227), sglang (213), TensorRT-LLM (208)。重点关注：[Bugfix] Reject shape mismatches in ShardedStateLoader instead of partially loading (fixes #61681 mechanism)（vllm）。"
+  "direction_total": 8,
+  "narrative": "本周尚未结束（6/7 天）日均 154 条。合并 176 条、关闭 255 条。领域分布：推理 542、训练 296、方向 8、通用 81。热点主题：CUDA/Kernel (240)、Quantization (149)、GRPO/PPO (136)。",
+  "complete": false,
+  "days_elapsed": 6,
+  "as_of": "2026-10-17T13:54:13+00:00",
+  "per_day": 154.5,
+  "coverage": [
+   {
+    "repo": "NVIDIA/Megatron-LM",
+    "days": 8,
+    "count": 203
+   },
+   {
+    "repo": "NVIDIA/TensorRT-LLM",
+    "days": 4,
+    "count": 208
+   },
+   {
+    "repo": "THUDM/slime",
+    "days": 75,
+    "count": 214
+   },
+   {
+    "repo": "sgl-project/sglang",
+    "days": 2,
+    "count": 213
+   },
+   {
+    "repo": "verl-project/verl",
+    "days": 18,
+    "count": 216
+   },
+   {
+    "repo": "vllm-project/vime",
+    "days": 120,
+    "count": 193
+   },
+   {
+    "repo": "vllm-project/vllm",
+    "days": 2,
+    "count": 227
+   }
+  ],
+  "coverage_partial": true,
+  "coverage_note": "快照覆盖不均：TensorRT-LLM、sglang、vllm 不足 7 天，总量与仓库排名仅供趋势参考"
  },
  "items": [
   {

@@ -782,7 +782,21 @@ def llm_check(cfg: dict) -> bool:
 
 
 # ── weekly digest ────────────────────────────────────────────────────────────────
+DIGEST_TOP_N = 6          # cards in "Top PRs this week"
+DIGEST_DIR_N = 4          # rows in "Direction & Evolution"
+DIGEST_REPO_CAP = 2       # max top slots per repo, for cross-repo breadth
+
+
 def build_weekly_digest(items: list[dict]) -> dict | None:
+    """Build the weekly digest for the most recent ISO week.
+
+    Deliberately reports three things a naive digest gets wrong:
+      * `complete` / `days_elapsed` — an unfinished week must not read as final;
+      * `merged` / `closed`         — created-only digests hide delivery;
+      * `coverage`                  — per-repo fetch caps make raw totals
+                                      incomparable across repos, so the spread
+                                      is surfaced instead of silently implied.
+    """
     if not items:
         return None
     weeks: dict[tuple[int, int], list[dict]] = {}
@@ -797,44 +811,128 @@ def build_weekly_digest(items: list[dict]) -> dict | None:
         return None
     (y, w) = max(weeks.keys())
     wk = weeks[(y, w)]
-    start = datetime.strptime(f"{y}-W{w}-1", "%G-W%V-%u")
+    start = datetime.strptime(f"{y}-W{w}-1", "%G-W%V-%u").replace(tzinfo=timezone.utc)
     end = start + timedelta(days=6)
+    now = datetime.now(timezone.utc)
     rng = f"{start.strftime('%b %d')} – {end.strftime('%b %d')}"
+    complete = now >= end
+    days_elapsed = max(1, min(7, (now - start).days + 1))
 
     by_focus = {k: 0 for k in FOCUS_LABELS}
     for it in wk:
         by_focus[it["focus"]] = by_focus.get(it["focus"], 0) + 1
+
+    # ── outcome side: merged/closed are timestamps, not creation dates ────────
+    def _in_week(ts: str | None) -> bool:
+        if not ts:
+            return False
+        try:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).isocalendar()[:2] == (y, w)
+        except (ValueError, TypeError, AttributeError):
+            return False
+
+    merged = sum(1 for it in items if _in_week(it.get("merged_at")))
+    closed = sum(1 for it in items if _in_week(it.get("closed_at")))
+
+    # ── snapshot coverage per repo (per-repo caps make totals incomparable) ──
+    span: dict[str, list] = {}
+    for it in items:
+        try:
+            t = datetime.fromisoformat((it.get("created_at") or "").replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+        c = span.get(it["repo"])
+        if c is None:
+            span[it["repo"]] = [t, t, 1]
+        else:
+            c[0] = min(c[0], t); c[1] = max(c[1], t); c[2] += 1
+    coverage = {r: {"days": max(1, (v[1] - v[0]).days + 1), "count": v[2]}
+                for r, v in span.items()}
+
     repo_counts: dict[str, int] = {}
     for it in wk:
         repo_counts[it["repo"]] = repo_counts.get(it["repo"], 0) + 1
-    top_repos = sorted(repo_counts.items(), key=lambda x: -x[1])[:5]
+    top_repos = []
+    for r, c in sorted(repo_counts.items(), key=lambda x: -x[1])[:5]:
+        cd = coverage.get(r, {}).get("days")
+        top_repos.append({"repo": r, "count": c, "days": cd,
+                          "per_day": round(c / cd, 1) if cd else None})
 
     def to_digest(it: dict) -> dict:
         return {"id": it["id"], "repo": it["repo"], "number": it["number"],
                 "title": it["title"], "author": it["author"], "url": it["url"],
                 "score": it["score"], "focus": it["focus"], "summary": it["summary"]}
 
-    top = [to_digest(i) for i in sorted(wk, key=lambda x: -x["score"])[:6]]
-    direction = [to_digest(i) for i in sorted(
-        [i for i in wk if i["focus"] == "direction"], key=lambda x: -x["score"])[:4]]
+    # ── Top PRs: deterministic tiebreak, then per-repo breadth ───────────────
+    ranked = [i for i in wk if i["type"] == "pr"]
+    ranked.sort(key=lambda x: x.get("created_at") or "", reverse=True)   # recency fallback
+    ranked.sort(key=lambda x: (x["score"], x.get("comments") or 0,
+                               x.get("reactions") or 0), reverse=True)   # stable
 
-    top_repo_str = ", ".join(f"{r.split('/')[1]} ({c})" for r, c in top_repos[:3])
-    narrative = (
-        f"本周（{rng}）共 {len(wk)} 条动态 —— "
-        f"PR {sum(1 for i in wk if i['type'] == 'pr')} "
-        f"· Issue {sum(1 for i in wk if i['type'] == 'issue')}。"
-        f"推理优化 {by_focus['inference']} 条、训练优化 {by_focus['training']} 条、"
-        f"方向演进 {by_focus['direction']} 条。"
-        + (f"最活跃仓库：{top_repo_str}。" if top_repo_str else "")
-        + (f"重点关注：{top[0]['title']}（{top[0]['repo'].split('/')[1]}）。" if top else "")
+    picked: list[dict] = []
+    per_repo: dict[str, int] = {}
+    for it in ranked:
+        if len(picked) >= DIGEST_TOP_N:
+            break
+        if per_repo.get(it["repo"], 0) >= DIGEST_REPO_CAP:
+            continue
+        per_repo[it["repo"]] = per_repo.get(it["repo"], 0) + 1
+        picked.append(it)
+    for it in ranked:                       # fill slots diversity left empty
+        if len(picked) >= DIGEST_TOP_N:
+            break
+        if it not in picked:
+            picked.append(it)
+    picked.sort(key=lambda x: -x["score"])  # diverse selection, score-ordered display
+    top = [to_digest(i) for i in picked]
+
+    # ── Direction: never repeat an item that is already a Top card ───────────
+    top_ids = {t["id"] for t in top}
+    dir_all = sorted([i for i in wk if i["focus"] == "direction"],
+                     key=lambda x: -x["score"])
+    direction = [to_digest(i) for i in dir_all if i["id"] not in top_ids][:DIGEST_DIR_N]
+
+    # ── narrative: add what the header and chips do NOT already say ─────────
+    per_day = len(wk) / days_elapsed
+    tag_counts: dict[str, int] = {}
+    for it in wk:
+        for t in (it.get("tags") or []):
+            tag_counts[t] = tag_counts.get(t, 0) + 1
+    top_tags = sorted(tag_counts.items(), key=lambda x: -x[1])[:3]
+
+    parts = [
+        ("本周" if complete else f"本周尚未结束（{days_elapsed}/7 天）") + f"日均 {per_day:.0f} 条",
+        f"合并 {merged} 条、关闭 {closed} 条",
+        (f"领域分布：推理 {by_focus['inference']}、训练 {by_focus['training']}、"
+         f"方向 {by_focus['direction']}、通用 {by_focus['general']}"),
+    ]
+    if top_tags:
+        parts.append("热点主题：" + "、".join(f"{t} ({c})" for t, c in top_tags))
+    narrative = "。".join(parts) + "。"
+
+    thin = [r.split("/")[-1] for r, v in coverage.items() if v["days"] < 7]
+    coverage_partial = bool(thin)
+    coverage_note = (
+        f"快照覆盖不均：{'、'.join(sorted(thin))} 不足 7 天，总量与仓库排名仅供趋势参考"
+        if coverage_partial else None
     )
+
     return {
         "week": f"{y}-W{w:02d}", "range": rng, "total": len(wk),
         "prs": sum(1 for i in wk if i["type"] == "pr"),
         "issues": sum(1 for i in wk if i["type"] == "issue"),
+        "merged": merged, "closed": closed,
         "by_focus": by_focus,
-        "top_repos": [{"repo": r, "count": c} for r, c in top_repos],
-        "top": top, "direction": direction, "narrative": narrative,
+        "top_repos": top_repos,
+        "top": top, "direction": direction,
+        "direction_total": len(dir_all),
+        "narrative": narrative,
+        "complete": complete, "days_elapsed": days_elapsed,
+        "as_of": now.isoformat(timespec="seconds"),
+        "per_day": round(per_day, 1),
+        "coverage": [{"repo": r, **v} for r, v in sorted(coverage.items())],
+        "coverage_partial": coverage_partial,
+        "coverage_note": coverage_note,
     }
 
 

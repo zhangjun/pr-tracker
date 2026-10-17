@@ -61,6 +61,15 @@ export interface DigestItem {
   summary: string;
 }
 
+export interface DigestRepoCount {
+  repo: string;
+  count: number;
+  /** days of data actually observed for this repo in the snapshot */
+  days?: number;
+  /** items per observed day — the only fair cross-repo comparison */
+  per_day?: number;
+}
+
 export interface WeeklyDigest {
   week: string;
   range: string;
@@ -68,10 +77,31 @@ export interface WeeklyDigest {
   prs: number;
   issues: number;
   by_focus: Record<FocusKey, number>;
-  top_repos: { repo: string; count: number }[];
+  top_repos: DigestRepoCount[];
   top: DigestItem[];
   direction: DigestItem[];
   narrative: string;
+
+  /* ── completeness: a week in progress must not be read as a finished one ── */
+  /** false while the ISO week is still running */
+  complete?: boolean;
+  /** 1–7 days elapsed in the week */
+  days_elapsed?: number;
+  /** ISO timestamp the digest was computed at */
+  as_of?: string;
+  /** total / days_elapsed */
+  per_day?: number;
+
+  /* ── outcome side (created-only digests hide delivery) ── */
+  merged?: number;
+  closed?: number;
+
+  /* ── how many direction items exist vs how many are shown ── */
+  direction_total?: number;
+
+  /* ── snapshot coverage: per-repo caps make raw totals incomparable ── */
+  coverage_partial?: boolean;
+  coverage_note?: string;
 }
 
 export interface FeedData {
