@@ -1,0 +1,36 @@
+node_modules/
+.next/
+out/
+*.log
+.DS_Store
+
+# secrets / local config
+.env
+.env.local
+.env*.local
+.env*.swp
+
+# python
+__pycache__/
+*.py[cod]
+
+# build / tooling caches
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# generated backups / eval artifacts
+public/data/data.before-*.json
+eval-report*.json
+eval-verify.json
+eval-llm-badge.json
+eval-shots/
+
+# stray local scratch files
+z3r3l2v3
+
+# local agent state (not project source)
+.workbuddy-ai/
+
+# reference material: local snapshot of synflux.org used for the visual language
+synflux.html
+synflux.css
