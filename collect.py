@@ -1138,6 +1138,35 @@ def attach_digest_insight(items: list[dict], wd: dict | None, cfg: dict | None) 
     return wd
 
 
+# ── web payload trimming ────────────────────────────────────────────────────────
+# `body` and `discussion` are inputs: classification reads the body, extract_summary
+# reads body + comments, and the LLM prompt reads both. All of that runs before the
+# file is written. Nothing in the UI renders either field — the only use is
+# `it.discussion.length`, a count shown as a badge.
+#
+# They were 91% of data.json (5.9MB body + 3.0MB discussion out of 10.6MB). The
+# published site serves it over a gateway that sustains ~32KB/s, so shipping prose
+# that is never displayed cost the reader ~100s of blank screen. Trimming keeps a
+# short preview (useful for a future expand-on-click) and the true comment count.
+WEB_BODY_CHARS = 600
+WEB_DISCUSSION_KEEP = 2
+WEB_DISCUSSION_CHARS = 240
+
+
+def slim_for_web(items: list[dict]) -> list[dict]:
+    """Shrink items for transport. `discussion_count` preserves the real total."""
+    out: list[dict] = []
+    for it in items:
+        body = it.get("body") or ""
+        disc = it.get("discussion") or []
+        s = dict(it)
+        s["body"] = body[:WEB_BODY_CHARS]
+        s["discussion_count"] = len(disc)
+        s["discussion"] = [d[:WEB_DISCUSSION_CHARS] for d in disc[:WEB_DISCUSSION_KEEP]]
+        out.append(s)
+    return out
+
+
 # ── main ────────────────────────────────────────────────────────────────────────
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -1276,6 +1305,10 @@ def main() -> None:
         "items": items,
     }
     out = out_dir / "data.json"
+    # indent=1 is kept for readable git diffs; gzip collapses the repeated
+    # indentation to near nothing on the wire, so it costs the reader almost
+    # nothing while making "data: refresh" commits reviewable.
+    data["items"] = slim_for_web(items)
     out.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\n✓ wrote {out}  ({len(items)} items across {len(repo_meta)} repos)"
           + (f"  | digest {digest['week']} ({digest['total']} items)" if digest else ""))

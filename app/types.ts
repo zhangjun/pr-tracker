@@ -37,6 +37,8 @@ export interface FeedItem {
   summary_source?: "llm" | "heuristic";
   body: string;
   discussion?: string[];
+  /** real comment total; `discussion` itself is truncated in the served payload */
+  discussion_count?: number;
   comments: number;
   reactions: number;
   additions: number;

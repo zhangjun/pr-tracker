@@ -12,6 +12,9 @@ Checks, in order of how badly each would break the deployed page:
   3. `weekly_digest` points at a week that the items really cover
   4. the editorial `insight`, when present, does not reference PRs that are
      absent from the digest (the anti-hallucination contract from collect.py)
+  5. the payload stays within its transport budget — the browser downloads
+     this file before it can draw anything, so a silent size regression is a
+     visible outage, not a cosmetic issue
 
 Exits non-zero with a human-readable reason on the first failure.
 """
@@ -20,6 +23,12 @@ import sys
 from pathlib import Path
 
 DATA = Path("public/data/data.json")
+
+# Full PR bodies and comment threads used to make this file 10.6MB, of which
+# the UI rendered none. slim_for_web() trims them; this ceiling keeps that
+# from being undone. Gzipped it is ~0.6MB, which is what actually crosses the
+# wire.
+MAX_BYTES = 4_500_000
 
 # Fields PRTrackerClient reads unconditionally; a missing one renders "undefined"
 REQUIRED_ITEM_FIELDS = ("repo", "number", "type", "title", "created_at", "score")
@@ -69,12 +78,25 @@ def main() -> None:
         if unknown:
             fail(f"insight.key_prs references PRs outside the digest: {unknown}")
 
+    # ── 4. transport budget ───────────────────────────────────────────────────
+    size = DATA.stat().st_size
+    if size > MAX_BYTES:
+        biggest = sorted(items, key=lambda i: len(i.get("body") or ""), reverse=True)[:3]
+        detail = ", ".join(
+            f"{i.get('repo')}#{i.get('number')} body={len(i.get('body') or ''):,}ch"
+            for i in biggest
+        )
+        fail(
+            f"data.json is {size/1e6:.2f}MB, over the {MAX_BYTES/1e6:.1f}MB budget. "
+            f"Large bodies: {detail}. Did slim_for_web() stop being applied?"
+        )
+
     # ── report ────────────────────────────────────────────────────────────────
     llm = sum(1 for i in items if i.get("summary_source") == "llm")
     repos = len(d.get("repos") or [])
     src = (ins.get("source") or "none") if ins else "none"
     print(
-        f"OK  items={len(items)}  repos={repos}  "
+        f"OK  items={len(items)}  repos={repos}  size={size/1e6:.2f}MB  "
         f"week={week} ({wd.get('total')} items, {wd.get('prs')} PRs)  "
         f"llm_summaries={llm}  insight={src}"
     )

@@ -31,6 +31,10 @@ z3r3l2v3
 
 # local agent state (not project source)
 .workbuddy-ai/
+.workbuddy/
+
+# app-publish marker written by the deployer, not project source
+.wbapp_*.genie
 
 # reference material: local snapshot of synflux.org used for the visual language
 synflux.html

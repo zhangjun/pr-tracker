@@ -177,11 +177,17 @@ function ItemCard({ it }: { it: FeedItem }) {
           {it.summary_source === "llm" && (
             <span className="ai-badge" title="Summary refined by the configured LLM">AI</span>
           )}
-          {it.discussion && it.discussion.length > 0 && (
-            <span className="discuss-badge" title={`${it.discussion.length} discussion comment${it.discussion.length > 1 ? 's' : ''}`}>
-              <Ico d={IC.comment} size={10} /> {it.discussion.length}
-            </span>
-          )}
+          {/* `discussion` is truncated to a couple of previews in the served
+              payload, so the real total comes from `discussion_count`. */}
+          {(() => {
+            const n = it.discussion_count ?? it.discussion?.length ?? 0;
+            if (n <= 0) return null;
+            return (
+              <span className="discuss-badge" title={`${n} discussion comment${n > 1 ? 's' : ''}`}>
+                <Ico d={IC.comment} size={10} /> {n}
+              </span>
+            );
+          })()}
         </div>
       )}
       <div className="pill-row">

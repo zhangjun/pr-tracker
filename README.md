@@ -45,6 +45,37 @@ python collect.py --days 30            # recent month
 python collect.py --repos vllm-project/vllm sgl-project/sglang
 ```
 
+### Scheduled refresh (GitHub Actions)
+`.github/workflows/collect.yml` re-collects daily at 01:00 UTC (09:00 Asia/Shanghai)
+and commits `data.json` back, which is what triggers a rebuild of the deployed site.
+Trigger it by hand from the Actions tab via `workflow_dispatch`:
+
+| input | default | meaning |
+| --- | --- | --- |
+| `days` | `120` | collection window |
+| `llm_limit` | `200` | LLM-enrich the top N by score (`0` = all, `off` = skip the LLM) |
+| `workers` | `2` | parallel LLM requests; lower it if the endpoint returns 429 |
+
+Add these repository secrets: `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`,
+and optionally `GH_PAT`. Without `GH_PAT` the run falls back to `GITHUB_TOKEN`,
+which allows 1,000 requests/hour — a full run needs more and can run out halfway,
+so a fine-grained PAT is recommended.
+
+Before committing, the run executes `.github/verify_data.py`, which refuses to
+publish an empty dataset, items missing fields the UI reads, a digest whose week
+has no items, an LLM insight citing PRs that are not in the digest, or a payload
+that has grown past its transport budget.
+
+### Why the payload is trimmed
+`body` and `discussion` are inputs to classification, summary extraction and the
+LLM prompt, all of which run before the file is written. The UI renders neither —
+it only shows a comment count. Shipping them in full made `data.json` 10.6MB, of
+which 91% was prose no one could see, and the gateway serves roughly 32KB/s, so
+the first paint waited ~100 seconds. `slim_for_web()` keeps a 600-character body
+preview, two 240-character comment previews, and the true total in
+`discussion_count`. The file is now 2.8MB (0.58MB gzipped) with identical content
+in every field the UI reads.
+
 ## Optional: LLM enrichment (OpenAI-compatible API)
 Every item gets a rule-based summary and classification. Passing `--llm` refines
 it with any server that speaks `POST /v1/chat/completions` — OpenAI, Azure
@@ -137,4 +168,10 @@ npm run build && npm run start
 ## Deploy
 The app is a static-friendly Next.js App Router site; deploy to Vercel with
 `vercel`, or run `npm run build && npm run start` anywhere.
-A scheduled `collect.py` run (cron / GitHub Action) keeps `data.json` fresh.
+
+Live: <https://41308ce78a5b45deaed0317dc029ac4f.sg.agentos-app.run>
+
+The scheduled collection described above keeps `data.json` fresh. Note that a
+host which rebuilds on push (Vercel/Netlify) is what turns a new commit into a
+new deploy; a host that only serves the existing build needs its own redeploy
+trigger.
