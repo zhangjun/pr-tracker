@@ -70,11 +70,15 @@ that has grown past its transport budget.
 `body` and `discussion` are inputs to classification, summary extraction and the
 LLM prompt, all of which run before the file is written. The UI renders neither —
 it only shows a comment count. Shipping them in full made `data.json` 10.6MB, of
-which 91% was prose no one could see, and the gateway serves roughly 32KB/s, so
-the first paint waited ~100 seconds. `slim_for_web()` keeps a 600-character body
+which 91% was prose no one could see. `slim_for_web()` keeps a 600-character body
 preview, two 240-character comment previews, and the true total in
-`discussion_count`. The file is now 2.8MB (0.58MB gzipped) with identical content
+`discussion_count`. The file is now 2.8MB (0.6MB gzipped) with identical content
 in every field the UI reads.
+
+Worth being precise about why: 10.6MB is ~3.1MB gzipped, so on a CDN this was
+slow rather than fatal. It became fatal on a host that measured ~32KB/s and does
+not compress, where first paint waited ~100 seconds. The trim helps every host
+and costs nothing, so it is not conditional on where the site is served.
 
 ## Optional: LLM enrichment (OpenAI-compatible API)
 Every item gets a rule-based summary and classification. Passing `--llm` refines
@@ -166,12 +170,31 @@ npm run build && npm run start
 ```
 
 ## Deploy
-The app is a static-friendly Next.js App Router site; deploy to Vercel with
-`vercel`, or run `npm run build && npm run start` anywhere.
 
-Live: <https://41308ce78a5b45deaed0317dc029ac4f.sg.agentos-app.run>
+### GitHub Pages (static export)
+Live: <https://zhangjun.github.io/pr-tracker/>
 
-The scheduled collection described above keeps `data.json` fresh. Note that a
-host which rebuilds on push (Vercel/Netlify) is what turns a new commit into a
-new deploy; a host that only serves the existing build needs its own redeploy
-trigger.
+`next.config.ts` sets `output: "export"`, so `npm run build` emits a
+self-contained `out/` directory and no Node runtime is needed.
+`.github/workflows/pages.yml` builds and publishes it on every push, on manual
+dispatch, and when the collector finishes.
+
+Three details make or break this, and each fails quietly rather than loudly:
+
+| issue | what happens without the fix |
+| --- | --- |
+| `fetch("/data/data.json")` is root-absolute | on `/<repo>/` it resolves outside the site and the feed stays empty forever; it now carries `NEXT_PUBLIC_BASE_PATH` |
+| Jekyll skips `_`-prefixed directories | `_next/` is dropped and the page loads with no CSS or JS; `public/.nojekyll` prevents it |
+| `basePath` must match the repo name | wrong prefix means 404 on every asset; the workflow derives it, and keeps it empty for `<user>.github.io` |
+
+The `workflow_run` trigger is required, not a convenience: `collect.yml` pushes
+`data.json` with `GITHUB_TOKEN`, and GitHub does not let that token trigger
+push-based workflows, so a scheduled refresh would otherwise never reach Pages.
+
+To deploy this to your own account: create a repo, push, then set
+**Settings → Pages → Source: GitHub Actions**.
+
+### Other hosts
+The site also runs as a normal Next.js server — `npm run build && npm run start`,
+or Vercel via `vercel`. In that mode leave `NEXT_PUBLIC_BASE_PATH` unset so the
+app is served from the domain root.
