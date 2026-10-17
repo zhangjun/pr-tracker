@@ -202,6 +202,19 @@ push-based workflows, so a scheduled refresh would otherwise never reach Pages.
 To deploy this to your own account: create a repo, push, then set
 **Settings → Pages → Source: GitHub Actions**.
 
+### Verifying a deploy
+`check_live.js` renders a deployed URL in a real browser and reports what the
+digest actually painted — console errors, focus points, module cards, key PRs,
+card count. A 200 on the HTML proves nothing here, because the page is entirely
+client-side: a wrong `basePath` or a missing `.nojekyll` still returns 200 and
+then renders an empty shell.
+
+```bash
+NODE_PATH=/path/to/node_modules node check_live.js https://zhangjun.github.io/pr-tracker/
+# add "Weekly" to switch views — Overview only shows the compact digest
+node check_live.js <url> Weekly
+```
+
 ### Other hosts
 The site also runs as a normal Next.js server — `npm run build && npm run start`,
 or Vercel via `vercel`. In that mode leave `NEXT_PUBLIC_BASE_PATH` unset so the

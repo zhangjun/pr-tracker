@@ -4,6 +4,12 @@
 Reads public/data/data.json, recomputes focus/score/value with the improved
 weighted classifier, rebuilds the weekly digest, and writes it back.
 Also prints a before/after distribution + migration matrix.
+
+Caveat: the committed data.json is slimmed for transport (body is cut to 600
+characters, see slim_for_web in collect.py), and classify_focus reads up to
+1200 characters of body. Re-running this therefore classifies on a prefix of
+the text the original collection saw. It is fine for re-weighting a keyword
+table; if you need a faithful re-classification, re-run collect.py instead.
 """
 import json
 from collections import Counter, defaultdict

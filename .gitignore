@@ -26,6 +26,16 @@ eval-llm-badge.json
 eval-digest.json
 eval-shots/
 
+# one-off evaluation scripts and audit notes from the build-out. Kept on disk
+# for reference; they hardcode absolute paths to a local Playwright install and
+# describe work that has already been done, so they are not project source.
+eval_*.js
+mock_openai.py
+mock_openai.log
+EVALUATION.md
+FOCUS_EVALUATION.md
+WEEKLY_DIGEST_EVALUATION.md
+
 # stray local scratch files
 z3r3l2v3
 
