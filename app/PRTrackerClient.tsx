@@ -664,7 +664,11 @@ export default function PRTrackerClient() {
 
   // data
   useEffect(() => {
-    fetch("/data/data.json", { cache: "no-cache" })
+    // Must be prefixed: on a GitHub Pages project site the app is served from
+    // /<repo>/ and a root-absolute "/data/data.json" resolves outside the site.
+    // Inlined at build time, so this is a constant by the time it ships.
+    const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+    fetch(`${base}/data/data.json`, { cache: "no-cache" })
       .then(r => r.json())
       .then((d: FeedData) => { setData(d); setLoading(false); })
       .catch(e => { setError(String(e)); setLoading(false); });

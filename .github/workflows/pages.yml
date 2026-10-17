@@ -1,0 +1,106 @@
+name: Deploy to GitHub Pages
+
+# Three ways in:
+#   push       — code or content changed
+#   workflow_run — the collector committed new data.json. That commit is pushed
+#                  with GITHUB_TOKEN, which GitHub deliberately does NOT use to
+#                  trigger push-based workflows (recursion guard), so `push`
+#                  alone would never fire for a scheduled refresh. `workflow_run`
+#                  fires on the collector's completion regardless of its token.
+#   dispatch   — manual redeploy
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "public/**"
+      - "next.config.ts"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/pages.yml"
+  workflow_run:
+    workflows: ["Collect data"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Pages deploys are not cancellable mid-flight without leaving the site in a
+# half-published state, so queue them.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # A collector run that failed to produce data must not trigger a deploy of
+    # the previous data; only deploy when it succeeded (or on push/dispatch).
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci
+
+      # A project site lives at /<repo>/, but a user/org site
+      # (<user>.github.io) is served from the root. Getting this wrong produces
+      # a page that loads with no CSS and an empty feed, so it is computed
+      # rather than hardcoded.
+      - name: Resolve base path
+        id: base
+        run: |
+          set -euo pipefail
+          repo="${{ github.event.repository.name }}"
+          if [[ "$repo" == *.github.io ]]; then
+            base=""
+          else
+            base="/$repo"
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "base path: '${base:-<root>}'"
+
+      - name: Build static export
+        env:
+          NEXT_PUBLIC_BASE_PATH: ${{ steps.base.outputs.base }}
+        run: npm run build
+
+      # Fail here, loudly, rather than deploying a page that silently can't
+      # find its own assets or data.
+      - name: Verify export
+        env:
+          BASE: ${{ steps.base.outputs.base }}
+        run: |
+          set -euo pipefail
+          test -f out/index.html        || { echo "::error::out/index.html missing"; exit 1; }
+          test -f out/data/data.json    || { echo "::error::out/data/data.json missing"; exit 1; }
+          test -f out/.nojekyll         || { echo "::error::out/.nojekyll missing — Jekyll would strip _next/"; exit 1; }
+          test -d out/_next             || { echo "::error::out/_next missing"; exit 1; }
+          if [ -n "$BASE" ]; then
+            grep -q "${BASE}/_next/" out/index.html \
+              || { echo "::error::index.html does not reference ${BASE}/_next/ — base path not applied"; exit 1; }
+          fi
+          echo "export ok: $(du -sh out | cut -f1), $(find out -type f | wc -l | tr -d ' ') files"
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
