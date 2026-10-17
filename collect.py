@@ -1150,6 +1150,8 @@ def main() -> None:
                          "(OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL, or .env)")
     ap.add_argument("--llm-limit", type=int, default=200, dest="llm_limit",
                     help="with --llm, enrich only the top-N items by score (0 = all)")
+    ap.add_argument("--llm-workers", type=int, default=3, dest="llm_workers",
+                    help="with --llm, parallel requests (lower it if the endpoint rate-limits)")
     ap.add_argument("--llm-check", action="store_true", dest="llm_check",
                     help="test the OpenAI-compatible endpoint and exit")
     ap.add_argument("--no-digest", action="store_true", help="skip weekly digest")
@@ -1248,7 +1250,8 @@ def main() -> None:
         if cfg:
             scope = "all" if args.llm_limit == 0 else f"top {args.llm_limit}"
             print(f"\n▶ enriching with LLM ({scope}) → {_chat_url(cfg['base'])}  model={cfg['model']}")
-            items = enrich_with_llm(items, cfg, limit=args.llm_limit)
+            items = enrich_with_llm(items, cfg, max_workers=args.llm_workers,
+                                    limit=args.llm_limit)
         else:
             print("\n! --llm set but no endpoint configured. Set OPENAI_BASE_URL / "
                   "OPENAI_API_KEY / OPENAI_MODEL (or add them to .env). "

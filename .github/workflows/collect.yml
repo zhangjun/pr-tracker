@@ -1,0 +1,95 @@
+name: Collect data
+
+# Refreshes public/data/data.json from GitHub on a schedule and commits it back.
+# The commit is what makes the deployed site update (Vercel/Netlify rebuild on push).
+on:
+  schedule:
+    # 01:00 UTC = 09:00 Asia/Shanghai. Daily is deliberate: a full run fetches
+    # ~1,500 endpoints (7 repos x 200 PRs + comments), which is close to the
+    # hourly rate limit of the default GITHUB_TOKEN.
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Collection window in days"
+        default: "120"
+      llm_limit:
+        description: "LLM-enrich the top N items (0 = all, off = skip LLM)"
+        default: "200"
+      workers:
+        description: "Parallel LLM requests (lower this if the endpoint rate-limits)"
+        default: "2"
+
+permissions:
+  contents: write
+
+# Never let two refreshes overlap; queue instead of cancelling so a long run
+# is not killed halfway through.
+concurrency:
+  group: collect-data
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # collect.py shells out to `gh api`; GH_TOKEN authenticates it.
+      # Add a GH_PAT secret for the 5,000 req/h user quota — the default
+      # GITHUB_TOKEN is limited to 1,000 req/h and may run out mid-collection.
+      - name: Collect
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        run: |
+          set -euo pipefail
+
+          # On a scheduled run there are no inputs at all, so every one of these
+          # expands to an empty string and the defaults below take over.
+          DAYS="${{ github.event.inputs.days }}"
+          LIMIT="${{ github.event.inputs.llm_limit }}"
+          WORKERS="${{ github.event.inputs.workers }}"
+          DAYS="${DAYS:-120}"
+          LIMIT="${LIMIT:-200}"
+          WORKERS="${WORKERS:-2}"
+
+          ARGS=(--days "$DAYS")
+
+          # `|| '200'` cannot be used above: it would make "skip the LLM" a
+          # state the workflow could never express. `off` is the explicit opt-out.
+          if [ "$LIMIT" = "off" ] || [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "LLM enrichment disabled — collecting heuristic data only"
+          else
+            echo "LLM enrichment enabled (top $LIMIT, workers=$WORKERS)"
+            ARGS+=(--llm --llm-limit "$LIMIT" --llm-workers "$WORKERS")
+          fi
+
+          echo "running: python collect.py ${ARGS[*]}"
+          python collect.py "${ARGS[@]}"
+
+      # A heredoc cannot be used here: YAML block-scalar indentation leaves the
+      # terminator indented, so bash never closes it and python receives the
+      # terminator line as source. The check lives in a real file instead.
+      - name: Verify output
+        run: python .github/verify_data.py
+
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/data/data.json
+          if git diff --cached --quiet; then
+            echo "No data changes — nothing to commit"
+            exit 0
+          fi
+          git commit -m "data: refresh $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push
