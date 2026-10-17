@@ -22,6 +22,12 @@ dashboard) and built on the architecture of
 
 ## Features
 - **Daily / Weekly / Monthly** views (sidebar) — each item is bucketed by day, ISO week, or month.
+- **Weekly editorial digest** — three prose blocks instead of a wall of counts:
+  **本周重点** (this week's focus), **功能模块与开发趋势** (modules & trends, with
+  up/flat/down badges), and **重点 PR** (key changes, each with a one-line reason to
+  care). Written by the LLM when an endpoint is configured, otherwise generated
+  deterministically. The digest recomputes against the active filters and flags an
+  unfinished week as `IN PROGRESS n/7 d`.
 - **Time window** pills: 7d / 30d / 90d / All.
 - **Filters**: repo, type (PR/Issue), focus, category (`perf`/`feature`/`bugfix`/`infra`/`refactor`/`doc`), state, and free-text search.
 - **Stat cards**, per-repo activity cards with 8-week sparklines, and **Cards / Table** display modes.

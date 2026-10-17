@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type { DigestItem, FeedData, FeedItem, FocusKey, CatKey, WeeklyDigest } from "./types";
+import type {
+  DigestInsight, DigestItem, DigestKeyPr, DigestModule,
+  FeedData, FeedItem, FocusKey, CatKey, WeeklyDigest,
+} from "./types";
 
 /* ── design tokens (mirror globals.css) ───────────────────────────────────────── */
 const FOCUS_COLOR: Record<FocusKey, string> = {
@@ -373,16 +376,112 @@ function buildDigest(week: string, items: FeedItem[], allItems: FeedItem[]): Wee
   };
 }
 
+const TREND_LABEL: Record<DigestModule["trend"], string> = {
+  up: "升温", flat: "平稳", down: "降温", new: "新出现",
+};
+
+function prevWeekLabel(label: string): string {
+  const m = label.match(/^(\d{4})-W(\d{1,2})$/);
+  if (!m) return "";
+  let year = +m[1], week = +m[2] - 1;
+  if (week === 0) { year -= 1; week = 52; }
+  return `${year}-W${String(week).padStart(2, "0")}`;
+}
+
+/** Deterministic editorial layer — used when the server has no LLM-written one,
+ *  and whenever a filter narrows the view (the LLM prose describes the whole week). */
+function buildInsight(week: string, weekItems: FeedItem[], allItems: FeedItem[]): DigestInsight {
+  const prevItems = allItems.filter(it => isoWeekKey(new Date(it.created_at)) === prevWeekLabel(week));
+
+  const index = (arr: FeedItem[]) => {
+    const m = new Map<string, { count: number; repos: Map<string, number>; items: FeedItem[] }>();
+    for (const it of arr) {
+      for (const t of it.tags) {
+        const e = m.get(t) ?? { count: 0, repos: new Map<string, number>(), items: [] };
+        e.count += 1;
+        e.repos.set(it.repo, (e.repos.get(it.repo) ?? 0) + 1);
+        e.items.push(it);
+        m.set(t, e);
+      }
+    }
+    return m;
+  };
+
+  const cur = index(weekItems);
+  const prev = index(prevItems);
+  const total = Math.max(1, weekItems.length);
+  const prevTotal = Math.max(1, prevItems.length);
+
+  const modules: DigestModule[] = [...cur.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 6)
+    .map(([name, e]) => {
+      const share = e.count / total;
+      const prevCount = prev.get(name)?.count ?? 0;
+      // A thin previous week cannot support a trend claim: the snapshot is
+      // truncated per repo, so "everything is up" would just mean "we fetched
+      // more this week". Report 平稳 instead of inventing a direction.
+      const hasBaseline = prevItems.length >= 20;
+      const pshare = prevCount / prevTotal;
+      const trend: DigestModule["trend"] =
+        !hasBaseline ? "flat"
+        : prevCount === 0 ? "new"
+        : share > pshare * 1.15 ? "up"
+        : share < pshare * 0.85 ? "down"
+        : "flat";
+      const rep = [...e.items].sort((a, b) => b.score - a.score)[0];
+      const repos = [...e.repos.entries()].sort((a, b) => b[1] - a[1]).map(([r]) => r.split("/")[1]);
+      return { name, count: e.count, repos, trend, note: rep.summary || rep.title };
+    });
+
+  const focus: string[] = [];
+  for (const m of modules.slice(0, 2)) {
+    focus.push(`${m.repos.slice(0, 3).join("、")} 本周在 ${m.name} 方向共 ${m.count} 条，代表性工作：${m.note.slice(0, 58)}`);
+  }
+  const broad = modules.find(m => m.repos.length >= 3);
+  if (broad) {
+    focus.push(`${broad.name} 在 ${broad.repos.length} 个仓库同步推进，已从单点优化转为跨仓库共识方向。`);
+  }
+  const dirItems = weekItems.filter(i => i.focus === "direction");
+  if (dirItems.length) {
+    const rs = [...new Set(dirItems.map(i => i.repo.split("/")[1]))].slice(0, 3).join("、");
+    focus.push(`方向性讨论 ${dirItems.length} 条，来自 ${rs}，以 RFC 与设计文档为主。`);
+  }
+  if (!focus.length) focus.push("本周没有足够数据生成重点摘要。");
+
+  const key_prs: DigestKeyPr[] = weekItems
+    .filter(i => i.type === "pr")
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 4)
+    .map(i => ({ repo: i.repo, number: i.number }));
+
+  return { source: "heuristic", focus: focus.slice(0, 4), modules, key_prs };
+}
+
+
 const DIGEST_FOCUS: FocusKey[] = ["inference", "training", "direction", "general"];
 const DIGEST_COLOR: Record<FocusKey, string> = {
   inference: "var(--c-inference)", training: "var(--c-training)",
   direction: "var(--c-direction)", general: "var(--c-general)",
 };
 
-function WeeklyDigestPanel({ d, compact, filtered }: {
-  d: WeeklyDigest; compact?: boolean; filtered?: boolean;
+function WeeklyDigestPanel({ d, insight, compact, filtered }: {
+  d: WeeklyDigest; insight: DigestInsight | null; compact?: boolean; filtered?: boolean;
 }) {
   const total = Math.max(1, d.total);
+
+  // Key PRs: prefer the editorial picks (which carry a "why"), fall back to the
+  // score-ranked cards when the digest has no LLM-written layer.
+  const keyPrs = (() => {
+    const picked = (insight?.key_prs ?? [])
+      .map(k => ({
+        item: d.top.find(t => t.repo === k.repo && t.number === k.number),
+        why: k.why,
+      }))
+      .filter((x): x is { item: DigestItem; why: string | undefined } => !!x.item);
+    return picked.length ? picked : d.top.map(t => ({ item: t, why: undefined as string | undefined }));
+  })();
+
   return (
     <div className="digest">
       <div className="digest-head">
@@ -411,8 +510,6 @@ function WeeklyDigestPanel({ d, compact, filtered }: {
         </div>
       </div>
 
-      <p className="digest-narrative">{d.narrative}</p>
-
       <div className="digest-bar">
         {DIGEST_FOCUS.map(f => {
           const pct = (d.by_focus[f] / total) * 100;
@@ -423,35 +520,67 @@ function WeeklyDigestPanel({ d, compact, filtered }: {
         })}
       </div>
 
-      {d.top_repos.length > 0 && (
-        <div className="digest-repos">
-          {d.top_repos.map(r => (
-            <span key={r.repo} className="digest-repo"
-              title={r.days ? `${r.count} items over ${r.days} observed day(s) ≈ ${r.per_day}/day` : undefined}>
-              {r.repo.split("/")[1]} <b>{r.count}</b>
-              {r.days !== undefined && r.days < 7 && <span className="repo-thin"> ·{r.days}d</span>}
-            </span>
-          ))}
-        </div>
-      )}
-
       {d.coverage_note && (
         <div className="digest-warn">
           <span className="warn-dot" />{d.coverage_note}
         </div>
       )}
 
-      {!compact && (
+      {/* ── 本周重点 ─────────────────────────────────────────────────────────── */}
+      {insight && insight.focus.length > 0 && (
         <>
           <div className="digest-section-title">
-            Top PRs this week
-            <span className="digest-section-note">ranked by score · max {DIGEST_REPO_CAP} per repo</span>
+            本周重点
+            <span className="digest-section-note">This week&apos;s focus</span>
           </div>
-          {d.top.length === 0 ? (
+          <ul className="digest-focus">
+            {insight.focus.slice(0, compact ? 2 : 4).map((s, i) => (
+              <li key={i}>{s}</li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {!compact && (
+        <>
+          {/* ── 功能模块与开发趋势 ─────────────────────────────────────────────── */}
+          {insight && insight.modules.length > 0 && (
+            <>
+              <div className="digest-section-title">
+                功能模块与开发趋势
+                <span className="digest-section-note">Modules &amp; trends · {insight.source === "llm" ? "AI" : "auto"}</span>
+              </div>
+              <div className="digest-mods">
+                {insight.modules.map(m => (
+                  <div key={m.name} className="digest-mod" data-trend={m.trend}>
+                    <div className="mod-head">
+                      <span className="mod-name">{m.name}</span>
+                      <span className="mod-trend" data-trend={m.trend}>{TREND_LABEL[m.trend]}</span>
+                      <span className="mod-count">{m.count}</span>
+                    </div>
+                    <div className="mod-note">{m.note}</div>
+                    <div className="mod-repos">
+                      {m.repos.slice(0, 4).join(" · ")}
+                      {m.repos.length > 4 && ` · +${m.repos.length - 4}`}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* ── 重点 PR ──────────────────────────────────────────────────────── */}
+          <div className="digest-section-title">
+            重点 PR
+            <span className="digest-section-note">
+              key changes · ranked by score · max {DIGEST_REPO_CAP} per repo
+            </span>
+          </div>
+          {keyPrs.length === 0 ? (
             <div className="digest-empty">No pull requests match the current filters in this week.</div>
           ) : (
             <div className="digest-top">
-              {d.top.map(t => (
+              {keyPrs.map(({ item: t, why }) => (
                 <a key={t.id} href={t.url} target="_blank" rel="noopener noreferrer"
                   className="digest-top-card" data-focus={t.focus}>
                   <div className="dt-top">
@@ -460,13 +589,16 @@ function WeeklyDigestPanel({ d, compact, filtered }: {
                     <span className="dt-focus" style={{ background: DIGEST_COLOR[t.focus], color: "#fff" }}>{t.focus}</span>
                   </div>
                   <div className="dt-title">{t.title}</div>
-                  <div className="dt-summary">{t.summary}</div>
+                  {why
+                    ? <div className="dt-why">{why}</div>
+                    : <div className="dt-summary">{t.summary}</div>}
                   <div className="dt-author">@{t.author}</div>
                 </a>
               ))}
             </div>
           )}
 
+          {/* ── Direction & Evolution ─────────────────────────────────────────── */}
           {d.direction.length > 0 && (
             <>
               <div className="digest-section-title">
@@ -585,6 +717,18 @@ export default function PRTrackerClient() {
   const digestFiltered =
     typeFilter !== "all" || repoFilter !== "all" || focusFilter !== "all" ||
     stateFilter !== "all" || catFilter.size > 0 || search.trim() !== "";
+
+  // Editorial layer. The server's LLM-written prose describes the whole week, so
+  // it is only valid unfiltered; otherwise fall back to the deterministic builder,
+  // which reads the same filtered items as the digest itself.
+  const insight = useMemo<DigestInsight | null>(() => {
+    const week = data?.weekly_digest?.week;
+    if (!data || !week) return null;
+    const weekItems = filtered.filter(it => isoWeekKey(new Date(it.created_at)) === week);
+    const llm = data.weekly_digest?.insight;
+    if (llm && llm.focus?.length && !digestFiltered) return llm;
+    return buildInsight(week, weekItems, filtered);
+  }, [data, filtered, digestFiltered]);
 
   // stats
   const stats = useMemo(() => {
@@ -800,8 +944,12 @@ export default function PRTrackerClient() {
         </header>
 
         <div className="content">
-          {digest && view === "weekly" && <WeeklyDigestPanel d={digest} filtered={digestFiltered} />}
-          {digest && view === "overview" && <WeeklyDigestPanel d={digest} compact filtered={digestFiltered} />}
+          {digest && view === "weekly" && (
+            <WeeklyDigestPanel d={digest} insight={insight} filtered={digestFiltered} />
+          )}
+          {digest && view === "overview" && (
+            <WeeklyDigestPanel d={digest} insight={insight} compact filtered={digestFiltered} />
+          )}
 
           {/* stat cards */}
           <div className="stat-grid">

@@ -936,6 +936,208 @@ def build_weekly_digest(items: list[dict]) -> dict | None:
     }
 
 
+# ── editorial insight: prose, not statistics ────────────────────────────────────
+# The digest body answers "what happened and why it matters", in three blocks:
+#   本周重点      — 3–4 sentences of editorial judgement
+#   模块与趋势    — which modules moved, and in which direction
+#   重点 PR       — a handful of items, each with a one-line reason to care
+INSIGHT_MODULE_N = 6
+INSIGHT_KEY_PR_N = 4
+
+
+def _week_items(items: list[dict], week_label: str) -> list[dict]:
+    """Items whose created_at falls in the ISO week given as 'YYYY-Www'."""
+    m = re.match(r"(\d{4})-W(\d{1,2})", week_label or "")
+    if not m:
+        return []
+    target = (int(m.group(1)), int(m.group(2)))
+    out = []
+    for it in items:
+        try:
+            d = datetime.fromisoformat((it.get("created_at") or "").replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+        if d.isocalendar()[:2] == target:
+            out.append(it)
+    return out
+
+
+def _tag_stats(wk: list[dict]) -> dict[str, dict]:
+    idx: dict[str, dict] = {}
+    for it in wk:
+        for t in (it.get("tags") or []):
+            e = idx.setdefault(t, {"count": 0, "repo_counts": {}, "items": []})
+            e["count"] += 1
+            e["repo_counts"][it["repo"]] = e["repo_counts"].get(it["repo"], 0) + 1
+            e["items"].append(it)
+    return idx
+
+
+def _module_rows(wk: list[dict], prev_wk: list[dict], n: int = INSIGHT_MODULE_N) -> list[dict]:
+    """Module volume + cross-repo breadth + share-based trend.
+
+    Trend compares each module's *share* of the week, never its raw count: the
+    snapshot is truncated per repo, so a week with more data would otherwise make
+    every module look like it is surging.
+    """
+    cur = _tag_stats(wk)
+    prev = _tag_stats(prev_wk)
+    total = max(1, len(wk))
+    ptotal = max(1, len(prev_wk))
+    rows = []
+    has_baseline = len(prev_wk) >= 20
+    for tag, e in sorted(cur.items(), key=lambda kv: -kv[1]["count"])[:n]:
+        share = e["count"] / total
+        pcount = prev.get(tag, {}).get("count", 0)
+        pshare = pcount / ptotal
+        # a thin previous week cannot support a trend claim (per-repo truncation)
+        if not has_baseline:
+            trend = "flat"
+        elif pcount == 0:
+            trend = "new"
+        elif share > pshare * 1.15:
+            trend = "up"
+        elif share < pshare * 0.85:
+            trend = "down"
+        else:
+            trend = "flat"
+        rep = max(e["items"], key=lambda x: x["score"])
+        repos = [r.split("/")[-1] for r, _ in
+                 sorted(e["repo_counts"].items(), key=lambda kv: -kv[1])]
+        rows.append({
+            "name": tag,
+            "count": e["count"],
+            "repos": repos,
+            "trend": trend,
+            "note": (rep.get("summary") or rep.get("title") or "")[:120],
+        })
+    return rows
+
+
+INSIGHT_SYSTEM = (
+    "You are a senior AI-infrastructure engineer writing a Chinese weekly digest "
+    "for practitioners. You are concise, specific and never pad with statistics. "
+    "You always answer with a single strict JSON object and no prose."
+)
+
+INSIGHT_INSTRUCTION = (
+    "根据下面这一周的 GitHub 证据，写一份中文周报。输出严格 JSON，结构如下：\n"
+    '{"focus": ["...", "..."],\n'
+    ' "modules": [{"name": "<必须来自给定模块名>", "trend": "up|flat|down|new", "note": "..."}],\n'
+    ' "key_prs": [{"repo": "<owner/name>", "number": 123, "why": "..."}]}\n'
+    "要求：\n"
+    "- focus: 3–4 句，每句 25–60 字，点明仓库与模块，说明本周在做什么、为什么重要；"
+    "禁止罗列总数/百分比等统计数字。\n"
+    "- modules: 从给定模块名中挑最多 6 个；note 用一句话说清这个模块本周的具体工作；"
+    "trend 依据给定趋势，不要自行编造。\n"
+    "- key_prs: 从给定候选中挑 3–4 个；why 用一句话说明影响面或风险，不要复述标题。\n"
+    "- 全部使用简体中文；术语（KV cache、PD 分离、MoE 等）可保留英文。\n"
+    "只输出 JSON。"
+)
+
+
+def _insight_evidence(wk: list[dict], wd: dict, modules: list[dict]) -> str:
+    repos = ", ".join(f"{r['repo'].split('/')[-1]} {r['count']}" for r in wd["top_repos"])
+    lines = [
+        f"WEEK: {wd['week']} ({wd['range']}), "
+        f"{wd['total']} items, PR {wd['prs']}, Issue {wd['issues']}, "
+        f"merged {wd.get('merged', 0)}, closed {wd.get('closed', 0)}",
+        f"REPOS: {repos}",
+        "",
+        "MODULES (name | count | repos | trend | representative summary):",
+    ]
+    for m in modules:
+        lines.append(f"- {m['name']} | {m['count']} | {', '.join(m['repos'])} | "
+                     f"{m['trend']} | {m['note']}")
+    dir_items = [i for i in wk if i["focus"] == "direction"][:6]
+    if dir_items:
+        lines += ["", "DIRECTION (RFC / roadmap):"]
+        for it in dir_items:
+            lines.append(f"- {it['repo']} #{it['number']}: {it['title'][:110]}")
+    lines += ["", "KEY PR CANDIDATES:"]
+    for it in wd["top"][:8]:
+        lines.append(f"- {it['repo']} #{it['number']} [{it['focus']}] "
+                     f"{it['title'][:90]} — {it['summary'][:130]}")
+    return "\n".join(lines)
+
+
+def llm_digest_insight(items: list[dict], wd: dict, cfg: dict, timeout: int = 90) -> dict | None:
+    """Ask the model for the editorial layer of the digest."""
+    wk = _week_items(items, wd["week"])
+    if not wk:
+        return None
+    prev = _week_items(items, _prev_week_label(wd["week"]))
+    modules = _module_rows(wk, prev)
+
+    messages = [
+        {"role": "system", "content": INSIGHT_SYSTEM},
+        {"role": "user", "content": INSIGHT_INSTRUCTION + "\n\n" + _insight_evidence(wk, wd, modules)},
+    ]
+    try:
+        resp = _post_chat(cfg, messages, max_tokens=1600, timeout=timeout)
+    except Exception as e:
+        print(f"   ! digest insight failed: {type(e).__name__}: {str(e)[:120]}")
+        return None
+
+    choice = (resp.get("choices") or [{}])[0]
+    text = (choice.get("message") or {}).get("content") or ""
+    data = _extract_json(text)
+    if not data:
+        return None
+
+    by_name = {m["name"]: m for m in modules}
+    mods = []
+    for m in (data.get("modules") or []):
+        base = by_name.get(m.get("name"))
+        if not base:
+            continue                      # model invented a module — drop it
+        # the trend badge stays data-derived; only the prose comes from the model
+        mods.append({**base, "note": (m.get("note") or base["note"])[:160]})
+    if not mods:
+        mods = modules
+    mods.sort(key=lambda m: -m["count"])   # keep volume order, not the model's
+
+    candidates = {(t["repo"], t["number"]) for t in wd["top"]}
+    key_prs = []
+    for k in (data.get("key_prs") or [])[:INSIGHT_KEY_PR_N]:
+        repo, num = k.get("repo"), k.get("number")
+        try:
+            num = int(num)
+        except (TypeError, ValueError):
+            continue
+        if (repo, num) not in candidates:
+            continue
+        key_prs.append({"repo": repo, "number": num, "why": (k.get("why") or "")[:200]})
+
+    focus = [str(s).strip() for s in (data.get("focus") or []) if str(s).strip()][:4]
+    if not focus:
+        return None
+
+    return {"source": "llm", "focus": focus, "modules": mods, "key_prs": key_prs}
+
+
+def _prev_week_label(week_label: str) -> str:
+    m = re.match(r"(\d{4})-W(\d{1,2})", week_label or "")
+    if not m:
+        return ""
+    y, w = int(m.group(1)), int(m.group(2))
+    if w == 1:
+        return f"{y - 1}-W52"
+    return f"{y}-W{w - 1:02d}"
+
+
+def attach_digest_insight(items: list[dict], wd: dict | None, cfg: dict | None) -> dict | None:
+    """Best-effort: add `insight` to the digest; never fail the collection run."""
+    if not wd or not cfg:
+        return wd
+    insight = llm_digest_insight(items, wd, cfg)
+    if insight:
+        wd["insight"] = insight
+        print(f"   digest insight: {len(insight['focus'])} focus points, "
+              f"{len(insight['modules'])} modules, {len(insight['key_prs'])} key PRs")
+    return wd
+
+
 # ── main ────────────────────────────────────────────────────────────────────────
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -1056,6 +1258,10 @@ def main() -> None:
     digest = None
     if not args.no_digest:
         digest = build_weekly_digest(items)
+        # editorial layer: prose for 本周重点 / 模块与趋势 / 重点 PR
+        if args.llm and llm_config():
+            print("\n▶ writing digest insight …")
+            digest = attach_digest_insight(items, digest, llm_config())
 
     data = {
         "last_updated": datetime.now(timezone.utc).isoformat(),

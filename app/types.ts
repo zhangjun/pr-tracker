@@ -70,6 +70,32 @@ export interface DigestRepoCount {
   per_day?: number;
 }
 
+export interface DigestModule {
+  name: string;
+  count: number;
+  /** repos contributing to this module, busiest first */
+  repos: string[];
+  trend: "up" | "flat" | "down" | "new";
+  note: string;
+}
+
+export interface DigestKeyPr {
+  repo: string;
+  number: number;
+  /** why this one is worth reading — present only for LLM-written digests */
+  why?: string;
+}
+
+export interface DigestInsight {
+  source: "llm" | "heuristic";
+  /** 本周重点 — 3–4 sentences of editorial judgement */
+  focus: string[];
+  /** 功能模块与开发趋势 */
+  modules: DigestModule[];
+  /** 重点 PR */
+  key_prs: DigestKeyPr[];
+}
+
 export interface WeeklyDigest {
   week: string;
   range: string;
@@ -102,6 +128,9 @@ export interface WeeklyDigest {
   /* ── snapshot coverage: per-repo caps make raw totals incomparable ── */
   coverage_partial?: boolean;
   coverage_note?: string;
+
+  /* ── editorial layer: prose, not statistics ── */
+  insight?: DigestInsight;
 }
 
 export interface FeedData {

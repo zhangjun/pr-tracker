@@ -485,6 +485,50 @@ table.tbl tbody tr:hover { background: var(--surface-2); }
 }
 .digest-empty { font-size: 12px; color: var(--ink-mute); padding: 10px 0; }
 
+/* ── 本周重点 / 模块与趋势 / 重点 PR ──────────────────────────────────────── */
+.digest-focus { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.digest-focus li {
+  position: relative; padding-left: 16px; font-size: 13.5px; line-height: 1.65; color: var(--ink);
+}
+.digest-focus li::before {
+  content: ""; position: absolute; left: 2px; top: 8px;
+  width: 5px; height: 5px; border-radius: 50%; background: var(--teal-500);
+}
+
+.digest-mods {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px;
+}
+.digest-mod {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 12px;
+  border-left: 3px solid var(--border-2);
+}
+.digest-mod[data-trend="up"]   { border-left-color: var(--c-inference); }
+.digest-mod[data-trend="down"] { border-left-color: var(--c-general); }
+.digest-mod[data-trend="new"]  { border-left-color: var(--c-direction); }
+.mod-head { display: flex; align-items: center; gap: 8px; }
+.mod-name { font-size: 12.5px; font-weight: 700; color: var(--ink); }
+.mod-count {
+  margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--ink-mute);
+}
+.mod-trend {
+  font-family: var(--font-mono); font-size: 9px; font-weight: 700; letter-spacing: .04em;
+  padding: 1px 5px; border-radius: 4px; background: var(--surface-3); color: var(--ink-dim);
+}
+.mod-trend[data-trend="up"]   { color: var(--c-inference); background: color-mix(in oklab, var(--c-inference) 12%, transparent); }
+.mod-trend[data-trend="down"] { color: var(--ink-mute); }
+.mod-trend[data-trend="new"]  { color: var(--c-direction); background: color-mix(in oklab, var(--c-direction) 14%, transparent); }
+.mod-note { font-size: 11.5px; line-height: 1.55; color: var(--ink-dim); margin-top: 6px; }
+.mod-repos {
+  font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-mute); margin-top: 7px;
+}
+
+/* "why it matters" line on key-PR cards (LLM-written digests only) */
+.dt-why {
+  font-size: 11.5px; line-height: 1.55; color: var(--ink); margin-top: 5px;
+  padding-left: 8px; border-left: 2px solid color-mix(in oklab, var(--teal-500) 45%, var(--border));
+}
+
 /* ── responsive ──────────────────────────────────────────────────────────────── */
 @media (max-width: 1100px) {
   .stat-grid { grid-template-columns: repeat(2, 1fr); }

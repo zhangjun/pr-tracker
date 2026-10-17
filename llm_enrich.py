@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from collect import (llm_config, llm_check, enrich_with_llm, build_weekly_digest,
-                     _chat_url, _build_user_prompt, LLM_INSTRUCTION)
+                     attach_digest_insight, _chat_url, _build_user_prompt, LLM_INSTRUCTION)
 
 ROOT = Path(__file__).parent
 PATH = ROOT / "public" / "data" / "data.json"
@@ -37,6 +37,8 @@ def main() -> None:
                     help="parallel requests (lower this if the endpoint rate-limits)")
     ap.add_argument("--skip-done", action="store_true",
                     help="skip items already enriched by the LLM")
+    ap.add_argument("--no-insight", action="store_true",
+                    help="skip the editorial digest prose (本周重点 / 模块与趋势 / 重点 PR)")
     args = ap.parse_args()
 
     cfg = llm_config()
@@ -74,8 +76,13 @@ def main() -> None:
         print(LLM_INSTRUCTION + "\n\n" + _build_user_prompt(pool[0])[:1000])
         return
 
-    def save(data: dict) -> None:
-        data["weekly_digest"] = build_weekly_digest(items)
+    def save(data: dict, keep_insight: bool = True) -> None:
+        wd = build_weekly_digest(items)
+        if wd and keep_insight:
+            prev = (data.get("weekly_digest") or {}).get("insight")
+            if prev:
+                wd["insight"] = prev      # checkpoints must not wipe the prose
+        data["weekly_digest"] = wd
         PATH.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
     before = {x["id"]: (x.get("summary") or "") for x in pool}
@@ -92,7 +99,15 @@ def main() -> None:
     # keep one rolling backup so a bad model run is always recoverable
     backup = PATH.with_suffix(".before-llm.json")
     backup.write_text(PATH.read_text(encoding="utf-8"), encoding="utf-8")
-    save(d)
+
+    # rewrite the digest against the enriched summaries, then ask the model for
+    # the editorial layer (本周重点 / 模块与趋势 / 重点 PR)
+    wd = build_weekly_digest(items)
+    if not args.no_insight:
+        print("\n▶ writing digest insight …")
+        wd = attach_digest_insight(items, wd, cfg)
+    d["weekly_digest"] = wd
+    PATH.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
 
     print("\n=== before → after (sample) ===")
     for x in pool[:6]:

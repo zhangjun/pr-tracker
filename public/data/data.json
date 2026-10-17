@@ -252,7 +252,7 @@
   "narrative": "本周尚未结束（6/7 天）日均 154 条。合并 176 条、关闭 255 条。领域分布：推理 542、训练 296、方向 8、通用 81。热点主题：CUDA/Kernel (240)、Quantization (149)、GRPO/PPO (136)。",
   "complete": false,
   "days_elapsed": 6,
-  "as_of": "2026-10-17T13:54:13+00:00",
+  "as_of": "2026-10-17T14:39:45+00:00",
   "per_day": 154.5,
   "coverage": [
    {
@@ -292,7 +292,128 @@
    }
   ],
   "coverage_partial": true,
-  "coverage_note": "快照覆盖不均：TensorRT-LLM、sglang、vllm 不足 7 天，总量与仓库排名仅供趋势参考"
+  "coverage_note": "快照覆盖不均：TensorRT-LLM、sglang、vllm 不足 7 天，总量与仓库排名仅供趋势参考",
+  "insight": {
+   "source": "llm",
+   "focus": [
+    "vLLM 本周聚焦 RFC 推进，#62150 提出 PD 分离与 RL 生命周期协同方案，#62100 探索模型与平台定制化的 KV cache 规划",
+    "SGLang #44786 发布 SPICY-KV 提案，基于预 RoPE 代数多重网格压缩 RadixAttention，宣称 28.6x–50x 压缩比",
+    "CUDA/Kernel 模块在多框架同步推进，重点修复 Triton attention tiling 在 batch-invariant 模式下随 batch 组成变化导致确定性失效",
+    "Quantization 模块修复 NVFP4 MoE 后处理对 expert 权重 rename/repack 时 CPU offload 丢失 resident 的问题"
+   ],
+   "modules": [
+    {
+     "name": "CUDA/Kernel",
+     "count": 240,
+     "repos": [
+      "sglang",
+      "vllm",
+      "TensorRT-LLM",
+      "Megatron-LM",
+      "verl",
+      "slime",
+      "vime"
+     ],
+     "trend": "up",
+     "note": "修复 Triton attention tiling 在 batch-invariant 模式下因 batch 组成变化而改变导致确定性输出失败的问题。"
+    },
+    {
+     "name": "Quantization",
+     "count": 149,
+     "repos": [
+      "vllm",
+      "sglang",
+      "TensorRT-LLM",
+      "Megatron-LM",
+      "verl",
+      "slime"
+     ],
+     "trend": "up",
+     "note": "修复 NVFP4 MoE post-processing 对 expert 权重 rename 和 repack 时 CPU offload 丢失 resident 状态、恢复约 1 GiB 显存的问题。"
+    },
+    {
+     "name": "GRPO/PPO",
+     "count": 136,
+     "repos": [
+      "verl",
+      "TensorRT-LLM",
+      "sglang",
+      "vllm",
+      "Megatron-LM",
+      "slime",
+      "vime"
+     ],
+     "trend": "down",
+     "note": "主要推进 CODEOWNERS 维护与 fusedmoe/quantization/moe 测试权限梳理，新功能合并节奏放缓。"
+    },
+    {
+     "name": "Attention",
+     "count": 133,
+     "repos": [
+      "sglang",
+      "TensorRT-LLM",
+      "vllm",
+      "Megatron-LM",
+      "slime",
+      "verl"
+     ],
+     "trend": "up",
+     "note": "锁定 batch-invariant 模式下 Triton attention tiling 不受 batch 组成影响，消除确定性失败。"
+    },
+    {
+     "name": "MoE",
+     "count": 120,
+     "repos": [
+      "vllm",
+      "sglang",
+      "Megatron-LM",
+      "TensorRT-LLM",
+      "verl",
+      "slime",
+      "vime"
+     ],
+     "trend": "up",
+     "note": "修复 RoutedExperts.load_weights 中 per-expert gate 与 up 分片被错误 fuse 导致的静默权重损坏。"
+    },
+    {
+     "name": "Checkpoint",
+     "count": 94,
+     "repos": [
+      "Megatron-LM",
+      "sglang",
+      "TensorRT-LLM",
+      "vllm",
+      "verl",
+      "slime",
+      "vime"
+     ],
+     "trend": "flat",
+     "note": "依赖 #44702 引入的 model-selection 接口，当前仅含单 commit shared model hooks 分支，暂无新功能落地。"
+    }
+   ],
+   "key_prs": [
+    {
+     "repo": "vllm-project/vllm",
+     "number": 62137,
+     "why": "修复 Triton attention tiling 在 batch-invariant 模式下随 batch 组成变化而漂移，直接影响确定性推理与可复现性保证。"
+    },
+    {
+     "repo": "vllm-project/vllm",
+     "number": 62155,
+     "why": "在 ShardedStateLoader 中拒绝 tensor-parallel 布局不匹配的 checkpoint，避免静默加载产生错误输出。"
+    },
+    {
+     "repo": "sgl-project/sglang",
+     "number": 44889,
+     "why": "支持 KV-only hybrid decode radix cache 配合线性 EAGLE，实现前缀 KV 复用而不依赖 recurrent-state checkpoint，降低 PD 部署复杂度。"
+    },
+    {
+     "repo": "NVIDIA/Megatron-LM",
+     "number": 8144,
+     "why": "将 MLA KV MXFP8 量化融合进 TE 的 fused key/value RoPE kernel，替代原有 split-quant 内核，减少 kernel launch 开销并降低显存带宽压力。"
+    }
+   ]
+  }
  },
  "items": [
   {

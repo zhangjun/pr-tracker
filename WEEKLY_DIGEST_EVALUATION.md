@@ -295,3 +295,51 @@ console errors  : 0
 - `tsc --noEmit`、`npm run build`、`py_compile` 全部通过。
 - 浏览器（1440×900）三态实测：无筛选 / 领域筛选 / 仓库筛选，digest 均正确联动，**0 console 错误**。
 - 截图：`eval-shots/digest-02-weekly-fixed.png`；指标：`eval-digest.json`。
+
+---
+
+## 七、编辑层：从「报数字」改为「讲重点」（2026-10-17 追加）
+
+用户反馈：周报应该给出**每周重点描述**，而不是一堆数字。据此把 digest 正文重构为三个描述性区块。
+
+### 7.1 新结构
+
+| 区块 | 内容 | 来源 |
+| --- | --- | --- |
+| **本周重点** | 3–4 句编辑判断，点明仓库、模块、PR 编号，说明在做什么、为什么重要 | LLM（无端点时用确定性模板） |
+| **功能模块与开发趋势** | 6 个模块卡：名称 / 趋势徽章 / 条目数 / 一句话说明 / 参与仓库 | 模块统计确定性计算，说明文字由 LLM 写 |
+| **重点 PR** | 3–4 张卡，每张带一句「为什么值得看」，替代原来的技术摘要 | LLM 选品+写理由，候选来自已去重的 Top 列表 |
+
+原来的数字叙述段（「本周共 927 条…推理 542 条…」）**已从正文移除** —— 这些信息保留在头部一行元数据里。
+
+### 7.2 数据来源与降级
+
+- 服务端 `llm_digest_insight()` 生成 `weekly_digest.insight`，写入 `data.json`；每次采集/富化只需 **1 次 LLM 调用**。
+- 没有 LLM 端点时，前端 `buildInsight()` 用确定性模板生成同结构内容（`source: "heuristic"`，UI 标注 `auto`）。
+- **筛选时自动降级为确定性版本** —— LLM 写的是整周编辑视角，无法按筛选重算；确定性版本读取的正是筛选后的条目。
+- 趋势徽章**始终由数据计算**，只让模型写说明文字：避免模型自行编造「上升/下降」。
+
+### 7.3 趋势计算的两个陷阱（已规避）
+
+1. **不能用绝对量比较**。快照按 repo 截断，本周条目多只是因为抓得多。改为比较**模块占比**（share），而非计数。
+2. **基线过薄时不下结论**。上周样本 < 20 条时统一标记「平稳」，而不是让每个模块都显示「升温」。实测上周仅 125 条（截断所致），若用绝对量会得出「全线飙升」的假象。
+
+### 7.4 实测输出（2026-W42）
+
+**本周重点**
+> • vLLM 本周聚焦 RFC 推进，#62150 提出 PD 分离与 RL 生命周期协同方案，#62100 探索模型与平台定制化的 KV cache 规划
+> • SGLang #44786 发布 SPICY-KV 提案，基于预 RoPE 代数多重网格压缩 RadixAttention，宣称 28.6x–50x 压缩比
+> • CUDA/Kernel 模块在多框架同步推进，重点修复 Triton attention tiling 在 batch-invariant 模式下随 batch 组成变化导致确定性失效
+> • Quantization 模块修复 NVFP4 MoE 后处理对 expert 权重 rename/repack 时 CPU offload 丢失 resident 的问题
+
+**模块趋势**：CUDA/Kernel 240 升温 · Quantization 149 升温 · GRPO/PPO 136 降温 · Attention 133 升温 · MoE 120 升温 · Checkpoint 94 平稳
+
+**重点 PR**（带理由）：
+> vllm #62137 — 修复 Triton attention tiling 在 batch-invariant 模式下随 batch 组成变化而漂移，直接影响确定性推理与可复现性保证。
+> vllm #62155 — 在 ShardedStateLoader 中拒绝 tensor-parallel 布局不匹配的 checkpoint，避免静默加载产生错误输出。
+
+### 7.5 验证
+
+- `tsc --noEmit` / `npm run build` / `py_compile` 通过。
+- 浏览器：无筛选显示 LLM 版（`Modules & trends · AI`），筛选 sglang 后自动切 `auto` 且内容随筛选变化，0 console 错误。
+- 截图：`eval-shots/digest-03-editorial.png`、`digest-05-overview.png`（Overview 紧凑版只保留 2 条本周重点）。

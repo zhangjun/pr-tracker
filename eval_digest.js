@@ -1,20 +1,23 @@
-// Verify the reworked Weekly Digest: status chips, coverage note, repo breadth,
-// and — most importantly — that the digest now follows the active filters.
+// Verify the editorial digest: 本周重点 / 功能模块与开发趋势 / 重点 PR,
+// and that a filter falls back to the deterministic builder.
 const { chromium } = require("playwright");
 const fs = require("fs");
 
 const snap = async (page) => ({
-  kicker: (await page.locator(".digest-kicker").first().innerText()).replace(/\s+/g, " ").trim(),
-  range: (await page.locator(".digest-range").first().innerText()).replace(/\s+/g, " ").trim(),
-  narrative: (await page.locator(".digest-narrative").first().innerText()).replace(/\s+/g, " ").trim(),
-  legend: (await page.locator(".legend").first().innerText()).replace(/\s+/g, " ").trim(),
-  live: await page.locator(".digest-live").count(),
-  scope: await page.locator(".digest-scope").count(),
-  warn: (await page.locator(".digest-warn").count())
-    ? (await page.locator(".digest-warn").first().innerText()).replace(/\s+/g, " ").trim() : null,
-  topRepos: await page.locator(".digest-top-card .dt-repo").allTextContents(),
-  topScores: await page.locator(".digest-top-card .dt-score").allTextContents(),
-  dirNote: (await page.locator(".digest-section-note").allTextContents()).join(" | "),
+  focus: await page.locator(".digest-focus li").allTextContents(),
+  modules: await page.locator(".digest-mod").evaluateAll(els => els.map(e => ({
+    name: e.querySelector(".mod-name")?.textContent,
+    trend: e.querySelector(".mod-trend")?.textContent,
+    count: e.querySelector(".mod-count")?.textContent,
+    repos: e.querySelector(".mod-repos")?.textContent,
+  }))),
+  keyPrs: await page.locator(".digest-top-card").evaluateAll(els => els.map(e => ({
+    repo: e.querySelector(".dt-repo")?.textContent,
+    why: e.querySelector(".dt-why")?.textContent || null,
+    summary: e.querySelector(".dt-summary")?.textContent?.slice(0, 60) || null,
+  }))),
+  sectionTitles: await page.locator(".digest-section-title").allTextContents(),
+  sourceNote: (await page.locator(".digest-section-note").allTextContents()).join(" | "),
 });
 
 (async () => {
@@ -22,7 +25,7 @@ const snap = async (page) => ({
   const browser = await chromium.launch({
     args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.on("console", (m) => { if (m.type() === "error") out.errors.push(m.text().slice(0, 200)); });
   page.on("pageerror", (e) => out.errors.push("pageerror: " + String(e).slice(0, 200)));
 
@@ -32,24 +35,17 @@ const snap = async (page) => ({
   await page.locator('.nav-link:has-text("Weekly")').click();
   await page.waitForTimeout(1500);
   out.steps.push({ step: "weekly-unfiltered", ...(await snap(page)) });
-  await page.screenshot({ path: "eval-shots/digest-02-weekly-fixed.png", fullPage: false });
+  await page.screenshot({ path: "eval-shots/digest-03-editorial.png", fullPage: false });
 
-  // focus filter → digest must change
-  await page.locator('.nav-link:has-text("推理优化")').click();
+  // scroll to modules + key PRs
+  await page.locator(".digest-mods").scrollIntoViewIfNeeded();
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: "eval-shots/digest-04-modules.png", fullPage: false });
+
+  // filter → deterministic fallback
+  await page.locator('.repo-mini:has-text("sglang")').first().click();
   await page.waitForTimeout(1200);
-  out.steps.push({ step: "weekly-focus-inference", ...(await snap(page)) });
-
-  // back to all, then repo filter
-  await page.locator('.nav-link:has-text("All areas")').click();
-  await page.waitForTimeout(800);
-  const repoChip = page.locator('.repo-mini:has-text("sglang")').first();
-  if (await repoChip.count()) {
-    await repoChip.click();
-    await page.waitForTimeout(1200);
-    out.steps.push({ step: "weekly-repo-sglang", ...(await snap(page)) });
-  } else {
-    out.steps.push({ step: "weekly-repo-sglang", note: "repo selector not found" });
-  }
+  out.steps.push({ step: "weekly-repo-sglang", ...(await snap(page)) });
 
   fs.writeFileSync("eval-digest.json", JSON.stringify(out, null, 2));
   await browser.close();
