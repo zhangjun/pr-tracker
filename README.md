@@ -55,16 +55,24 @@ Trigger it by hand from the Actions tab via `workflow_dispatch`:
 | `days` | `120` | collection window |
 | `llm_limit` | `200` | LLM-enrich the top N by score (`0` = all, `off` = skip the LLM) |
 | `workers` | `2` | parallel LLM requests; lower it if the endpoint returns 429 |
+| `allow_llm_regression` | `0` | set to `1` to publish heuristic-only data over data that already has LLM summaries |
 
-Add these repository secrets: `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`,
-and optionally `GH_PAT`. Without `GH_PAT` the run falls back to `GITHUB_TOKEN`,
-which allows 1,000 requests/hour — a full run needs more and can run out halfway,
-so a fine-grained PAT is recommended.
+Add these repository secrets **before the first scheduled run**: `OPENAI_BASE_URL`,
+`OPENAI_API_KEY`, `OPENAI_MODEL`, and optionally `GH_PAT`. Without `GH_PAT` the run
+falls back to `GITHUB_TOKEN`, which allows 1,000 requests/hour — a full run needs
+more and can run out halfway, so a fine-grained PAT is recommended.
+
+If the `OPENAI_*` secrets are missing, the collector still runs, but it produces
+rule-based summaries only. On a repository whose committed data is already
+LLM-enriched that is a silent quality regression on a live site, so the verify
+step refuses to publish it and the run fails instead. Either add the secrets or
+pass `allow_llm_regression: 1` on purpose.
 
 Before committing, the run executes `.github/verify_data.py`, which refuses to
 publish an empty dataset, items missing fields the UI reads, a digest whose week
-has no items, an LLM insight citing PRs that are not in the digest, or a payload
-that has grown past its transport budget.
+has no items, an LLM insight citing PRs that are not in the digest, a payload
+that has grown past its transport budget, or an unexplained collapse in LLM
+coverage.
 
 ### Why the payload is trimmed
 `body` and `discussion` are inputs to classification, summary extraction and the

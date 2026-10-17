@@ -15,10 +15,17 @@ Checks, in order of how badly each would break the deployed page:
   5. the payload stays within its transport budget — the browser downloads
      this file before it can draw anything, so a silent size regression is a
      visible outage, not a cosmetic issue
+  6. LLM coverage did not silently collapse relative to the committed version.
+     A collector run without `OPENAI_API_KEY` is a legitimate heuristic-only
+     mode, but when it runs on a repository whose data is already LLM-enriched
+     it overwrites every summary and the digest insight with rule-based text.
+     That is a quiet quality regression on a live site, so it is refused.
 
 Exits non-zero with a human-readable reason on the first failure.
 """
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -36,6 +43,25 @@ REQUIRED_ITEM_FIELDS = ("repo", "number", "type", "title", "created_at", "score"
 
 def fail(msg: str) -> "NoReturn":  # type: ignore[name-defined]
     sys.exit(f"data.json rejected — {msg}")
+
+
+def llm_summaries(d: dict) -> int:
+    return sum(1 for i in (d.get("items") or []) if i.get("summary_source") == "llm")
+
+
+def committed_version() -> dict | None:
+    """The data.json at HEAD, i.e. what the live site is serving now."""
+    try:
+        raw = subprocess.run(
+            ["git", "show", "HEAD:public/data/data.json"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if raw.returncode != 0 or not raw.stdout:
+            return None
+        return json.loads(raw.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        # Not a git checkout, or no previous version — nothing to compare to.
+        return None
 
 
 def main() -> None:
@@ -90,6 +116,30 @@ def main() -> None:
             f"data.json is {size/1e6:.2f}MB, over the {MAX_BYTES/1e6:.1f}MB budget. "
             f"Large bodies: {detail}. Did slim_for_web() stop being applied?"
         )
+
+    # ── 5. LLM coverage must not silently collapse ────────────────────────────
+    # Deliberately dropping the LLM is fine — that is what the env var is for.
+    prev = committed_version()
+    if prev is not None and os.environ.get("ALLOW_LLM_REGRESSION") != "1":
+        prev_llm = llm_summaries(prev)
+        new_llm = llm_summaries(d)
+        if prev_llm > 0 and new_llm == 0:
+            fail(
+                f"this run produced 0 LLM summaries but the committed data has "
+                f"{prev_llm}. The collector almost certainly ran without "
+                f"OPENAI_API_KEY, which would replace every refined summary and "
+                f"the digest insight with rule-based text. Add the OPENAI_* "
+                f"repository secrets. If heuristic-only output is what you want, "
+                f"re-run with ALLOW_LLM_REGRESSION=1."
+            )
+        prev_ins = (prev.get("weekly_digest") or {}).get("insight") or {}
+        if prev_ins.get("source") == "llm" and ins.get("source") != "llm":
+            fail(
+                "the committed digest insight was written by the LLM but this run "
+                "would replace it with the heuristic one. Same cause: missing "
+                "OPENAI_* secrets. Set ALLOW_LLM_REGRESSION=1 to accept the "
+                "downgrade."
+            )
 
     # ── report ────────────────────────────────────────────────────────────────
     llm = sum(1 for i in items if i.get("summary_source") == "llm")

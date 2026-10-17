@@ -19,6 +19,9 @@ on:
       workers:
         description: "Parallel LLM requests (lower this if the endpoint rate-limits)"
         default: "2"
+      allow_llm_regression:
+        description: "Publish heuristic-only data over LLM-enriched data (1 = allow)"
+        default: "0"
 
 permissions:
   contents: write
@@ -79,6 +82,8 @@ jobs:
       # terminator indented, so bash never closes it and python receives the
       # terminator line as source. The check lives in a real file instead.
       - name: Verify output
+        env:
+          ALLOW_LLM_REGRESSION: ${{ github.event.inputs.allow_llm_regression == '1' && '1' || '' }}
         run: python .github/verify_data.py
 
       - name: Commit and push
