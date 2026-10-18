@@ -1,0 +1,18 @@
+name: Scheduler probe
+
+# TEMPORARY. Answers one question: does GitHub's cron scheduler actually fire
+# for this repository? `Collect data` has a 01:00 UTC schedule but produced
+# zero runs on its first slot, and nothing in the API says whether the cron is
+# registered. A run of this workflow tagged event=schedule is direct proof.
+# Deleted as soon as it has answered.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "fired $(date -u +%FT%TZ) via ${{ github.event_name }}"
