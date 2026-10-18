@@ -1,10 +1,8 @@
 name: Scheduler probe
 
-# TEMPORARY. Answers one question: does GitHub's cron scheduler actually fire
-# for this repository? `Collect data` has a 01:00 UTC schedule but produced
-# zero runs on its first slot, and nothing in the API says whether the cron is
-# registered. A run of this workflow tagged event=schedule is direct proof.
-# Deleted as soon as it has answered.
+# TEMPORARY. Re-registration test: this file was active for 20 minutes and its
+# */5 cron never fired once, while workflow_dispatch works instantly. Rewriting
+# the file forces GitHub to parse the schedule again.
 
 on:
   schedule:
