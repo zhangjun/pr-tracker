@@ -1196,6 +1196,19 @@ def main() -> None:
         print(f"→ checking {_chat_url(cfg['base'])}  model={cfg['model']}")
         sys.exit(0 if llm_check(cfg) else 1)
 
+    # Resolve the endpoint before touching the network: a misconfigured `--llm`
+    # must not cost two minutes of API calls and a half-written data.json.
+    # Not a warning — see the note at the enrichment call site.
+    cfg = llm_config() if args.llm else None
+    if args.llm and not cfg:
+        sys.exit(
+            "\n✗ --llm was requested but no endpoint is configured.\n"
+            "  Needs all three of OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL\n"
+            "  (or AIT_LLM_BASE_URL / AIT_LLM_KEY / AIT_LLM_MODEL, or a .env file).\n"
+            "  Drop --llm to collect heuristic data deliberately.\n"
+            "  Tip: `python collect.py --llm-check` tests the endpoint."
+        )
+
     repos = args.repos or DEFAULT_REPOS
     since = datetime.now(timezone.utc) - timedelta(days=args.days)
     root = Path(__file__).parent
@@ -1273,27 +1286,21 @@ def main() -> None:
             it["summary"] = extract_summary(it["body"], it["title"], cmt)
     print(f"   {len(comment_map)} items have discussion comments")
 
-    # optional LLM enrichment (gracefully skips if no reachable endpoint)
-    if args.llm:
-        cfg = llm_config()
-        if cfg:
-            scope = "all" if args.llm_limit == 0 else f"top {args.llm_limit}"
-            print(f"\n▶ enriching with LLM ({scope}) → {_chat_url(cfg['base'])}  model={cfg['model']}")
-            items = enrich_with_llm(items, cfg, max_workers=args.llm_workers,
-                                    limit=args.llm_limit)
-        else:
-            print("\n! --llm set but no endpoint configured. Set OPENAI_BASE_URL / "
-                  "OPENAI_API_KEY / OPENAI_MODEL (or add them to .env). "
-                  "Tip: `python collect.py --llm-check` to test.")
+    # optional LLM enrichment
+    if cfg:
+        scope = "all" if args.llm_limit == 0 else f"top {args.llm_limit}"
+        print(f"\n▶ enriching with LLM ({scope}) → {_chat_url(cfg['base'])}  model={cfg['model']}")
+        items = enrich_with_llm(items, cfg, max_workers=args.llm_workers,
+                                limit=args.llm_limit)
 
     # weekly digest
     digest = None
     if not args.no_digest:
         digest = build_weekly_digest(items)
         # editorial layer: prose for 本周重点 / 模块与趋势 / 重点 PR
-        if args.llm and llm_config():
+        if cfg:
             print("\n▶ writing digest insight …")
-            digest = attach_digest_insight(items, digest, llm_config())
+            digest = attach_digest_insight(items, digest, cfg)
 
     data = {
         "last_updated": datetime.now(timezone.utc).isoformat(),

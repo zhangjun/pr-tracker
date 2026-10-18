@@ -66,13 +66,32 @@ jobs:
 
           ARGS=(--days "$DAYS")
 
+          # collect.py's llm_config() needs base + key + model *together*; with
+          # any one missing it falls back to heuristic text. This step used to
+          # gate on OPENAI_API_KEY alone, so a repo holding only that secret
+          # printed "LLM enrichment enabled" while producing zero LLM summaries
+          # — and committed them over 156 refined ones. Count all three.
+          have=0
+          for v in OPENAI_BASE_URL OPENAI_API_KEY OPENAI_MODEL; do
+            [ -n "${!v:-}" ] && have=$((have + 1))
+          done
+
           # `|| '200'` cannot be used above: it would make "skip the LLM" a
           # state the workflow could never express. `off` is the explicit opt-out.
-          if [ "$LIMIT" = "off" ] || [ -z "${OPENAI_API_KEY:-}" ]; then
-            echo "LLM enrichment disabled — collecting heuristic data only"
-          else
-            echo "LLM enrichment enabled (top $LIMIT, workers=$WORKERS)"
+          if [ "$LIMIT" = "off" ]; then
+            echo "LLM enrichment disabled by input — collecting heuristic data only"
+          elif [ "$have" -eq 3 ]; then
+            echo "LLM enrichment enabled (top $LIMIT, workers=$WORKERS, model=$OPENAI_MODEL)"
             ARGS+=(--llm --llm-limit "$LIMIT" --llm-workers "$WORKERS")
+          elif [ "$have" -eq 0 ]; then
+            echo "::warning::No OPENAI_* secrets set — collecting heuristic data only"
+          else
+            echo "::error::Partial LLM configuration — need all three, or none."
+            for v in OPENAI_BASE_URL OPENAI_API_KEY OPENAI_MODEL; do
+              [ -n "${!v:-}" ] || echo "::error::  missing secret: $v"
+            done
+            echo "::error::Add the missing secrets, or set llm_limit=off to collect heuristic data on purpose."
+            exit 1
           fi
 
           echo "running: python collect.py ${ARGS[*]}"

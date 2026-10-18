@@ -15,11 +15,12 @@ Checks, in order of how badly each would break the deployed page:
   5. the payload stays within its transport budget — the browser downloads
      this file before it can draw anything, so a silent size regression is a
      visible outage, not a cosmetic issue
-  6. LLM coverage did not silently collapse relative to the committed version.
-     A collector run without `OPENAI_API_KEY` is a legitimate heuristic-only
-     mode, but when it runs on a repository whose data is already LLM-enriched
-     it overwrites every summary and the digest insight with rule-based text.
-     That is a quiet quality regression on a live site, so it is refused.
+  6. LLM coverage did not silently collapse — checked twice, because the two
+     checks catch different failures. Absolutely: a fully configured endpoint
+     that produced no summaries means enrichment errored out. Relatively: a
+     run without credentials must not overwrite a committed LLM-enriched
+     dataset. The relative check alone is not enough, since it goes blind the
+     moment one bad run makes HEAD heuristic-only.
 
 Exits non-zero with a human-readable reason on the first failure.
 """
@@ -39,6 +40,10 @@ MAX_BYTES = 4_500_000
 
 # Fields PRTrackerClient reads unconditionally; a missing one renders "undefined"
 REQUIRED_ITEM_FIELDS = ("repo", "number", "type", "title", "created_at", "score")
+
+# collect.py's llm_config() requires all three together; any one alone means
+# the collector falls back to heuristic text.
+LLM_ENV_VARS = ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL")
 
 
 def fail(msg: str) -> "NoReturn":  # type: ignore[name-defined]
@@ -119,8 +124,25 @@ def main() -> None:
 
     # ── 5. LLM coverage must not silently collapse ────────────────────────────
     # Deliberately dropping the LLM is fine — that is what the env var is for.
+    allowed = os.environ.get("ALLOW_LLM_REGRESSION") == "1"
+
+    # 5a. Absolute floor. The comparison below is relative to HEAD, so once one
+    # bad run has committed heuristic-only data, HEAD *is* heuristic-only and
+    # "no worse than HEAD" is vacuously true forever. If the endpoint is fully
+    # configured, output must contain LLM summaries; zero means enrichment ran
+    # and failed (bad model name, 429s, timeout), which no relative check sees.
+    if not allowed and all(os.environ.get(v) for v in LLM_ENV_VARS):
+        if llm_summaries(d) == 0:
+            fail(
+                "all three OPENAI_* variables are set but this run produced 0 "
+                "LLM summaries — enrichment failed silently (wrong model name, "
+                "rate limiting, or an unreachable endpoint). Refusing to publish "
+                "rule-based text. Check the Collect step log for the reason."
+            )
+
+    # 5b. Relative to the committed version.
     prev = committed_version()
-    if prev is not None and os.environ.get("ALLOW_LLM_REGRESSION") != "1":
+    if prev is not None and not allowed:
         prev_llm = llm_summaries(prev)
         new_llm = llm_summaries(d)
         if prev_llm > 0 and new_llm == 0:
