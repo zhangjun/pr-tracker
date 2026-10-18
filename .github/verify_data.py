@@ -20,7 +20,10 @@ Checks, in order of how badly each would break the deployed page:
      that produced no summaries means enrichment errored out. Relatively: a
      run without credentials must not overwrite a committed LLM-enriched
      dataset. The relative check alone is not enough, since it goes blind the
-     moment one bad run makes HEAD heuristic-only.
+     moment one bad run makes HEAD heuristic-only. The digest *insight* is
+     checked relatively too, but only as a warning: it is one call, and the UI
+     has a rule-based fallback for it, so a miss degrades prose rather than
+     breaking the page.
 
 Exits non-zero with a human-readable reason on the first failure.
 """
@@ -48,6 +51,17 @@ LLM_ENV_VARS = ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL")
 
 def fail(msg: str) -> "NoReturn":  # type: ignore[name-defined]
     sys.exit(f"data.json rejected — {msg}")
+
+
+def warn(msg: str) -> None:
+    """Non-fatal: the page still renders, but a human should know.
+
+    Emitted as a GitHub annotation when running in Actions so the warning shows
+    on the run summary instead of scrolling past in a 25-minute log.
+    """
+    print(f"WARNING: {msg}")
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::warning::{msg}")
 
 
 def llm_summaries(d: dict) -> int:
@@ -148,19 +162,24 @@ def main() -> None:
         if prev_llm > 0 and new_llm == 0:
             fail(
                 f"this run produced 0 LLM summaries but the committed data has "
-                f"{prev_llm}. The collector almost certainly ran without "
-                f"OPENAI_API_KEY, which would replace every refined summary and "
-                f"the digest insight with rule-based text. Add the OPENAI_* "
-                f"repository secrets. If heuristic-only output is what you want, "
-                f"re-run with ALLOW_LLM_REGRESSION=1."
+                f"{prev_llm}. Either the run had no LLM configured (llm_limit=off, "
+                f"or a missing/renamed OPENAI_* secret), or every enrichment call "
+                f"failed. Publishing this would replace every refined summary with "
+                f"rule-based text. Re-run with ALLOW_LLM_REGRESSION=1 if a "
+                f"heuristic-only dataset is what you want."
             )
+        # The editorial layer is a single call, and the Weekly view has a
+        # deterministic fallback for it (buildInsight() in PRTrackerClient), so a
+        # miss here degrades prose, not the page. Refusing the whole refresh over
+        # one flaky call left the site a full day stale — strictly worse.
         prev_ins = (prev.get("weekly_digest") or {}).get("insight") or {}
         if prev_ins.get("source") == "llm" and ins.get("source") != "llm":
-            fail(
-                "the committed digest insight was written by the LLM but this run "
-                "would replace it with the heuristic one. Same cause: missing "
-                "OPENAI_* secrets. Set ALLOW_LLM_REGRESSION=1 to accept the "
-                "downgrade."
+            warn(
+                f"no LLM digest insight this run, but the committed data has one. "
+                f"{new_llm} item summaries are LLM-written, so the endpoint works — "
+                f"the single editorial call failed. See the 'digest insight' lines "
+                f"in the Collect step. Publishing anyway; the Weekly view falls back "
+                f"to rule-based prose."
             )
 
     # ── report ────────────────────────────────────────────────────────────────

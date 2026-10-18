@@ -1062,58 +1062,80 @@ def _insight_evidence(wk: list[dict], wd: dict, modules: list[dict]) -> str:
 
 
 def llm_digest_insight(items: list[dict], wd: dict, cfg: dict, timeout: int = 90) -> dict | None:
-    """Ask the model for the editorial layer of the digest."""
+    """Ask the model for the editorial layer of the digest.
+
+    A single call carries the whole week's prose, so one truncated reply (the
+    model spends the budget on reasoning, or the JSON is cut mid-object) loses
+    the layer for the entire run. It used to lose it *silently*: the only trace
+    was a verify failure at the end of a 24-minute job. Ask again with a bigger
+    ceiling, and say out loud why each attempt came back empty.
+    """
     wk = _week_items(items, wd["week"])
     if not wk:
+        print(f"   ! digest insight skipped: no items bucketed into {wd['week']}")
         return None
     prev = _week_items(items, _prev_week_label(wd["week"]))
     modules = _module_rows(wk, prev)
+    by_name = {m["name"]: m for m in modules}
+    candidates = {(t["repo"], t["number"]) for t in wd["top"]}
 
     messages = [
         {"role": "system", "content": INSIGHT_SYSTEM},
         {"role": "user", "content": INSIGHT_INSTRUCTION + "\n\n" + _insight_evidence(wk, wd, modules)},
     ]
-    try:
-        resp = _post_chat(cfg, messages, max_tokens=1600, timeout=timeout)
-    except Exception as e:
-        print(f"   ! digest insight failed: {type(e).__name__}: {str(e)[:120]}")
-        return None
 
-    choice = (resp.get("choices") or [{}])[0]
-    text = (choice.get("message") or {}).get("content") or ""
-    data = _extract_json(text)
-    if not data:
-        return None
-
-    by_name = {m["name"]: m for m in modules}
-    mods = []
-    for m in (data.get("modules") or []):
-        base = by_name.get(m.get("name"))
-        if not base:
-            continue                      # model invented a module — drop it
-        # the trend badge stays data-derived; only the prose comes from the model
-        mods.append({**base, "note": (m.get("note") or base["note"])[:160]})
-    if not mods:
-        mods = modules
-    mods.sort(key=lambda m: -m["count"])   # keep volume order, not the model's
-
-    candidates = {(t["repo"], t["number"]) for t in wd["top"]}
-    key_prs = []
-    for k in (data.get("key_prs") or [])[:INSIGHT_KEY_PR_N]:
-        repo, num = k.get("repo"), k.get("number")
+    reason = "no attempt made"
+    for budget in (1600, 2600):
         try:
-            num = int(num)
-        except (TypeError, ValueError):
+            resp = _post_chat(cfg, messages, max_tokens=budget, timeout=timeout)
+        except Exception as e:
+            reason = f"{type(e).__name__}: {str(e)[:120]}"
+            print(f"   ! digest insight attempt failed — {reason}")
+            time.sleep(10)               # let a rate-limit window clear
             continue
-        if (repo, num) not in candidates:
+
+        choice = (resp.get("choices") or [{}])[0]
+        text = (choice.get("message") or {}).get("content") or ""
+        data = _extract_json(text)
+        if not data:
+            reason = (f"reply was not JSON (finish_reason={choice.get('finish_reason')}, "
+                      f"{len(text)} chars)")
+            print(f"   ! digest insight: {reason}")
             continue
-        key_prs.append({"repo": repo, "number": num, "why": (k.get("why") or "")[:200]})
 
-    focus = [str(s).strip() for s in (data.get("focus") or []) if str(s).strip()][:4]
-    if not focus:
-        return None
+        mods = []
+        for m in (data.get("modules") or []):
+            base = by_name.get(m.get("name"))
+            if not base:
+                continue                  # model invented a module — drop it
+            # the trend badge stays data-derived; only the prose comes from the model
+            mods.append({**base, "note": (m.get("note") or base["note"])[:160]})
+        if not mods:
+            mods = modules
+        mods.sort(key=lambda m: -m["count"])   # keep volume order, not the model's
 
-    return {"source": "llm", "focus": focus, "modules": mods, "key_prs": key_prs}
+        key_prs = []
+        for k in (data.get("key_prs") or [])[:INSIGHT_KEY_PR_N]:
+            repo, num = k.get("repo"), k.get("number")
+            try:
+                num = int(num)
+            except (TypeError, ValueError):
+                continue
+            if (repo, num) not in candidates:
+                continue
+            key_prs.append({"repo": repo, "number": num, "why": (k.get("why") or "")[:200]})
+
+        focus = [str(s).strip() for s in (data.get("focus") or []) if str(s).strip()][:4]
+        if not focus:
+            reason = "model returned no focus points"
+            print(f"   ! digest insight: {reason}")
+            continue
+
+        return {"source": "llm", "focus": focus, "modules": mods, "key_prs": key_prs}
+
+    print(f"   ! digest insight failed after 2 attempts — {reason}. "
+          f"The Weekly view will fall back to rule-based prose.")
+    return None
 
 
 def _prev_week_label(week_label: str) -> str:
